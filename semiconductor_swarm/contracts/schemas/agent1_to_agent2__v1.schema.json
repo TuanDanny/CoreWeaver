@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent 1 to Agent 2 Contract v1",
+  "type": "object",
+  "required": ["contract_version", "project_name", "modules", "interfaces", "requirements"],
+  "properties": {
+    "contract_version": {"type": "string", "const": "agent1_to_agent2/v1"},
+    "project_name": {"type": "string", "pattern": "^[a-z_][a-z0-9_]*$"},
+    "requirements": {"type": "object"},
+    "target_node": {"type": "string"},
+    "isa": {"type": "string"},
+    "core_config": {"type": "object"},
+    "accelerator": {"type": "object"},
+    "ppa_estimate": {"type": "object"},
+    "bandwidth_estimate": {"type": "object"},
+    "tool_inputs": {"type": "object"},
+    "tool_provenance": {"type": "object"},
+    "memory_map": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["base", "size"],
+        "properties": {
+          "base": {"type": "string"},
+          "size": {"type": "string"},
+          "registers": {"type": "object"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "bus_topology": {
+      "type": "object",
+      "required": ["protocol", "data_width_bits", "address_width_bits", "masters", "slaves"],
+      "properties": {
+        "protocol": {"type": "string", "const": "APB"},
+        "data_width_bits": {"type": "integer"},
+        "address_width_bits": {"type": "integer"},
+        "masters": {"type": "array", "items": {"type": "string"}},
+        "slaves": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
+    "ip_blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "interface"],
+        "properties": {
+          "name": {"type": "string"},
+          "interface": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "clock_domains": {"type": "array"},
+    "constraints": {
+      "type": "object",
+      "required": ["formal_first", "agent2_port_renaming_allowed"],
+      "properties": {
+        "formal_first": {"type": "boolean", "const": true},
+        "agent2_port_renaming_allowed": {"type": "boolean", "const": false}
+      },
+      "additionalProperties": true
+    },
+    "modules": {"type": "array"},
+    "interfaces": {
+      "type": ["object", "array"],
+      "properties": {
+        "apb_slave": {
+          "type": "object",
+          "required": ["signals", "naming_rule"],
+          "properties": {
+            "signals": {"type": "array", "minItems": 8},
+            "naming_rule": {"type": "string"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": true
+    },
+    "agent1_contract_manifest": {"type": "object"}
+  },
+  "additionalProperties": true
+}

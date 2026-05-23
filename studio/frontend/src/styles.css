@@ -1,0 +1,120 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #050812;
+}
+
+* {
+  scrollbar-color: rgba(53, 214, 255, 0.38) rgba(3, 8, 18, 0.72);
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+*::-webkit-scrollbar-track {
+  background: rgba(3, 8, 18, 0.72);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(53, 214, 255, 0.55), rgba(47, 128, 255, 0.38));
+  border: 2px solid rgba(3, 8, 18, 0.72);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-corner {
+  background: rgba(3, 8, 18, 0.72);
+}
+
+.trace-debug-shell {
+  container-type: inline-size;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.trace-debug-shell > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.trace-debug-body {
+  inline-size: 100%;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  justify-self: stretch;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(96px, 0.85fr) minmax(0, 1.15fr);
+}
+
+.trace-event-card {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.trace-event-list,
+.trace-detail {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.trace-scrollbar {
+  scrollbar-gutter: stable;
+}
+
+@container (min-width: 720px) {
+  .trace-debug-body {
+    grid-template-columns: minmax(220px, 0.9fr) minmax(260px, 1.1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+}
+
+@layer components {
+  .glass { @apply bg-deep/80 backdrop-blur-xl; }
+  .panel { @apply rounded-lg border border-cyanGlow/20 bg-orbital/80 shadow-glow backdrop-blur-xl; }
+  .input { @apply w-full rounded border border-cyanGlow/25 bg-black/40 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyanGlow; }
+  .btn-primary { @apply inline-flex items-center justify-center gap-2 rounded-lg border border-cyanGlow/40 bg-cyanGlow px-4 py-2 font-bold text-cosmic shadow-glow transition hover:bg-white disabled:opacity-50; }
+  .btn-secondary { @apply inline-flex items-center justify-center gap-2 rounded-lg border border-cyanGlow/25 bg-surface px-3 py-2 text-sm text-slate-100 transition hover:border-cyanGlow; }
+  .btn-danger { @apply inline-flex items-center justify-center gap-2 rounded-lg border border-danger/40 bg-danger/85 px-4 py-2 font-bold text-white shadow-danger transition hover:bg-danger; }
+  .btn-success { @apply inline-flex items-center justify-center gap-2 rounded border border-success/40 bg-success/20 px-3 py-1 text-success; }
+  .btn-warning { @apply inline-flex items-center justify-center gap-2 rounded border border-amber/40 bg-amber/20 px-3 py-1 text-amber; }
+  .chip { @apply inline-flex items-center gap-1 rounded-full border border-cyanGlow/25 bg-black/30 px-3 py-1 text-xs text-cyanGlow; }
+  .chip.active { @apply border-cyanGlow bg-cyanGlow/15 text-white; }
+  .chip.danger { @apply border-danger/60 text-danger; }
+  .sidebar-item { @apply flex w-full items-center gap-3 rounded-lg border border-transparent px-3 py-2 text-left text-sm text-slate-300 transition hover:border-cyanGlow/30 hover:bg-surface; }
+  .sidebar-item.active { @apply border-cyanGlow/50 bg-cyanGlow/10 text-white; }
+  .sidebar-item:disabled { @apply cursor-not-allowed opacity-55 hover:border-transparent hover:bg-transparent; }
+  .splitter { @apply h-full cursor-col-resize rounded-full border border-cyanGlow/10 bg-cyanGlow/10 transition hover:bg-cyanGlow/40; }
+  .stage { @apply flex flex-1 items-center justify-between gap-2 rounded-full border border-cyanGlow/15 bg-surface px-3 py-2 text-xs text-slate-400; }
+  .stage .dot { @apply h-2 w-2 rounded-full bg-slate-600; }
+  .stage.running { @apply border-cyanGlow/60 text-cyanGlow shadow-glow; }
+  .stage.running .dot { @apply bg-cyanGlow; }
+  .stage.pass .dot { @apply bg-success; }
+  .stage.fail .dot { @apply bg-danger; }
+  .agent-card { @apply rounded-lg border border-cyanGlow/15 bg-black/25 p-3 text-sm; }
+  .log { @apply border-b border-white/5 py-0.5; }
+  .log.error, .log.fail { @apply text-danger; }
+  .log.warning, .log.pause { @apply text-amber; }
+  .log.metric { @apply text-cyanGlow; }
+  .log.console { @apply text-success; }
+  .log.info { @apply text-plasma; }
+  .council-card { @apply w-full rounded-lg border border-cyanGlow/15 bg-black/25 p-3 text-left text-sm transition hover:border-cyanGlow/50 hover:bg-surface; }
+  .council-card p { @apply mt-1 max-h-10 overflow-hidden text-xs text-slate-400; }
+  .council-card.pass { @apply border-success/25; }
+  .council-card.running { @apply border-cyanGlow/45 shadow-glow; }
+  .council-card.fail, .council-card.conflict { @apply border-danger/60 shadow-danger; }
+  .council-card.slow { @apply ring-1 ring-cyanGlow/40; }
+  .council-card.expensive { @apply border-amber/70; }
+  .mini-chip { @apply rounded border border-cyanGlow/15 bg-black/30 px-1.5 py-0.5 text-[10px] text-cyanGlow; }
+  .mini-chip.danger { @apply border-danger/50 text-danger; }
+}

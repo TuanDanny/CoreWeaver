@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent 4 Result Contract v1",
+  "type": "object",
+  "required": ["contract_version", "project_name", "backend_used", "pass_fail_status", "timing_summary", "resource_summary", "constraints_generated", "commands", "tool_availability", "artifacts"],
+  "properties": {
+    "contract_version": {"type": "string", "const": "agent4_result/v1"},
+    "project_name": {"type": "string"},
+    "backend_used": {"type": "string"},
+    "pass_fail_status": {"type": "string", "enum": ["pass", "fail", "partial", "not_run"]},
+    "timing_summary": {"type": "object"},
+    "resource_summary": {"type": "object"},
+    "constraints_generated": {"type": "array"},
+    "commands": {"type": "array"},
+    "tool_availability": {"type": "object"},
+    "artifacts": {"type": "array"}
+  }
+}

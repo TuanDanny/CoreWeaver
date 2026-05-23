@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "semantic_review_report.schema.json",
+  "title": "semantic_review_report.json",
+  "type": "object",
+  "required": ["schema_version", "milestone", "reviewers", "findings"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "milestone": {"type": "string"},
+    "reviewers": {"type": "array"},
+    "findings": {"type": "array"}
+  },
+  "additionalProperties": true
+}

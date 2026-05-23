@@ -1,0 +1,5 @@
+{
+  "active_key_ref": "owner",
+  "checkpoint_db": ".swarm/studio_web_checkpoints.sqlite",
+  "output_root": "outputs/studio_runs"
+}

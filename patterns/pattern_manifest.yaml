@@ -1,0 +1,159 @@
+version: 2
+schema_version: agent2_pattern_manifest_v3_6
+library: Agent 2 Golden Micro-Pattern Library
+patterns:
+  - id: apb_slave_template
+    file: apb_slave_template.sv
+    category: bus_protocol
+    synthesizable: true
+    required_tokens:
+      - "AGENT2_PATTERN_ID: apb_slave_template"
+      - psel_i
+      - penable_i
+      - pwrite_i
+      - paddr_i
+      - pwdata_i
+      - prdata_o
+      - pready_o
+      - pslverr_o
+    forbidden_tokens:
+      - "$display"
+      - "initial begin"
+      - "#delay"
+    owners: [A2.13 APB Slave Writer]
+    parameters: [ADDR_WIDTH, DATA_WIDTH]
+    interfaces: [apb3_slave, clock_reset]
+    lint_status: required
+    formal_smoke: required
+  - id: sync_fifo_template
+    file: sync_fifo_template.sv
+    category: buffering
+    synthesizable: true
+    required_tokens:
+      - "AGENT2_PATTERN_ID: sync_fifo_template"
+      - always_ff
+      - always_comb
+      - wr_ptr_q
+      - rd_ptr_q
+      - full_o
+      - empty_o
+    forbidden_tokens:
+      - "$display"
+      - "initial begin"
+      - "#delay"
+    owners: [A2.15 FIFO Writer]
+    parameters: [WIDTH, DEPTH]
+    interfaces: [clock_reset, push_pop]
+    lint_status: required
+    formal_smoke: required
+  - id: pattern_apb_slave_register_file
+    file: pattern_apb_slave_register_file.sv
+    category: bus_protocol
+    synthesizable: true
+    required_tokens:
+      - "AGENT2_PATTERN_ID: pattern_apb_slave_register_file"
+      - psel_i
+      - penable_i
+      - pwrite_i
+      - paddr_i
+      - pwdata_i
+      - prdata_o
+      - pready_o
+      - pslverr_o
+      - always_ff
+      - always_comb
+    forbidden_tokens:
+      - "$display"
+      - "initial begin"
+      - "#delay"
+    owners: [A2.13 APB Slave Writer, A2.28 Synthesizability Reviewer]
+    parameters: [ADDR_WIDTH, DATA_WIDTH]
+    interfaces: [apb3_slave, clock_reset]
+    lint_status: required
+    formal_smoke: required
+  - id: pattern_sync_reset_pipeline
+    file: pattern_sync_reset_pipeline.sv
+    category: sequential_logic
+    synthesizable: true
+    required_tokens:
+      - "AGENT2_PATTERN_ID: pattern_sync_reset_pipeline"
+      - always_ff
+      - always_comb
+      - stage_1_data_q
+      - stage_1_data_d
+      - valid_o
+    forbidden_tokens:
+      - "$display"
+      - "initial begin"
+      - "#delay"
+    owners: [A2.14 Register File Writer, A2.28 Synthesizability Reviewer]
+    parameters: [WIDTH, STAGES]
+    interfaces: [clock_reset, pipeline]
+    lint_status: required
+    formal_smoke: required
+  - id: sync_fifo_verified
+    file: sync_fifo_verified.sv
+    category: buffering
+    synthesizable: true
+    required_tokens: ["AGENT2_PATTERN_ID: sync_fifo_verified", always_ff, always_comb, wr_ptr_q, rd_ptr_q, full_o, empty_o]
+    forbidden_tokens: ["$display", "initial begin", "#delay"]
+    owners: [A2.15 FIFO Writer, A2.28 Synthesizability Reviewer, A2.31 Formal Hook Agent]
+    parameters: [WIDTH, DEPTH]
+    interfaces: [clock_reset, push_pop]
+    lint_status: required
+    formal_smoke: required
+  - id: interrupt_controller_w1c_sticky
+    file: interrupt_controller_w1c_sticky.sv
+    category: interrupt
+    synthesizable: true
+    required_tokens: ["AGENT2_PATTERN_ID: interrupt_controller_w1c_sticky", always_ff, always_comb, sticky_q, irq_w1c_i, irq_o]
+    forbidden_tokens: ["$display", "initial begin", "#delay"]
+    owners: [A2.19 Interrupt Controller Writer, A2.28 Synthesizability Reviewer, A2.32 DV Hook Agent]
+    parameters: [SOURCES]
+    interfaces: [clock_reset, interrupt_status, write_one_to_clear]
+    lint_status: required
+    formal_smoke: required
+  - id: apb_timer_counter
+    file: apb_timer_counter.sv
+    category: timer
+    synthesizable: true
+    required_tokens: ["AGENT2_PATTERN_ID: apb_timer_counter", always_ff, always_comb, psel_i, penable_i, pready_o, pslverr_o]
+    forbidden_tokens: ["$display", "initial begin", "#delay"]
+    owners: [A2.18 Timer/Counter Writer, A2.28 Synthesizability Reviewer, A2.31 Formal Hook Agent]
+    parameters: [ADDR_WIDTH, DATA_WIDTH]
+    interfaces: [apb3_slave, clock_reset, interrupt]
+    lint_status: required
+    formal_smoke: required
+  - id: sram_controller_latency_ready
+    file: sram_controller_latency_ready.sv
+    category: memory
+    synthesizable: true
+    required_tokens: ["AGENT2_PATTERN_ID: sram_controller_latency_ready", always_ff, always_comb, ready_o, rdata_o, mem_q]
+    forbidden_tokens: ["$display", "initial begin", "#delay"]
+    owners: [A2.17 SRAM Controller Writer, A2.28 Synthesizability Reviewer, A2.31 Formal Hook Agent]
+    parameters: [ADDR_WIDTH, DATA_WIDTH, DEPTH]
+    interfaces: [clock_reset, memory_request_ready]
+    lint_status: required
+    formal_smoke: required
+  - id: secded_39_32_encoder_decoder
+    file: secded_39_32_encoder_decoder.sv
+    category: reliability
+    synthesizable: true
+    required_tokens: ["AGENT2_PATTERN_ID: secded_39_32_encoder_decoder", always_ff, always_comb, syndrome_o, correctable_error_o, uncorrectable_error_o]
+    forbidden_tokens: ["$display", "initial begin", "#delay"]
+    owners: [A2.52 Fault Tolerance Agent, A2.28 Synthesizability Reviewer, A2.31 Formal Hook Agent]
+    parameters: [DATA_WIDTH_32, CODE_WIDTH_39]
+    interfaces: [clock_reset, secded_encode_decode]
+    lint_status: required
+    formal_smoke: required
+  - id: simple_apb_crossbar_1m_ns
+    file: simple_apb_crossbar_1m_ns.sv
+    category: bus_protocol
+    synthesizable: true
+    required_tokens: ["AGENT2_PATTERN_ID: simple_apb_crossbar_1m_ns", always_ff, always_comb, slave_psel_o, pslverr_o, decode_hit]
+    forbidden_tokens: ["$display", "initial begin", "#delay"]
+    owners: [A2.53 NoC/Coherency Agent, A2.28 Synthesizability Reviewer, A2.31 Formal Hook Agent]
+    parameters: [SLAVES, ADDR_WIDTH, DATA_WIDTH]
+    interfaces: [apb3_master, apb3_slave_array, default_error_slave]
+    lint_status: required
+    formal_smoke: required

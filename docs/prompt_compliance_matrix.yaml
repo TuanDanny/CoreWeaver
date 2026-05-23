@@ -1,0 +1,59 @@
+agent1_v37_prompt_compliance_matrix:
+  source_prompt: docs/semiconductor_swarm_ai.md
+  agent: Agent 1 Hierarchical Architect
+  version: V3.7
+  requirements:
+    - id: A1_NO_MATH
+      rule: Numeric PPA and bandwidth estimates must not be invented by LLM.
+      enforcement:
+        code:
+          - semiconductor_swarm/agents/agent1_planning/spec_schema.py::validate_agent1_v37_spec_schema
+          - semiconductor_swarm/agents/agent1_planning/spec_schema.py::_validate_tool_provenance
+        tests:
+          - tests/test_agent1.py::test_agent1_v37_tool_provenance_required
+    - id: A1_PPA_TOOL_ONLY
+      rule: PPA estimates must come from calculate_ppa.
+      enforcement:
+        code:
+          - semiconductor_swarm/tools/ppa_calculator.py::calculate_ppa
+          - semiconductor_swarm/agents/agent1_planning/spec_schema.py::attach_tool_provenance
+        tests:
+          - tests/test_agent1.py::test_agent1_v37_tool_provenance_required
+    - id: A1_BW_TOOL_ONLY
+      rule: Bandwidth estimates must come from calculate_bandwidth.
+      enforcement:
+        code:
+          - semiconductor_swarm/tools/bandwidth_calculator.py::calculate_bandwidth
+          - semiconductor_swarm/agents/agent1_planning/spec_schema.py::attach_tool_provenance
+        tests:
+          - tests/test_agent1.py::test_agent1_v37_tool_provenance_required
+    - id: A1_STRICT_PINOUT
+      rule: APB slave pinout must stay locked for Agent 2.
+      enforcement:
+        code:
+          - semiconductor_swarm/agents/agent1_planning/architect.py::validate_architecture_spec
+        tests:
+          - tests/test_agent1.py::test_ai_camera_spec_has_tool_outputs_and_locked_pinout
+    - id: A1_NO_AGENT2_BEFORE_REVIEW
+      rule: No Agent 2 RTL production before plan review approval.
+      enforcement:
+        code:
+          - semiconductor_swarm/agents/agent1_planning/agent1_prompt.py::AGENT1_SYSTEM_PROMPT
+        tests:
+          - tests/test_agent1.py::test_agent1_v3_prompt_contains_full_super_committee_contract
+    - id: A1_RDL_FW_DV_ARTIFACTS
+      rule: Agent 1 must emit SystemRDL, firmware header/stub, and cocotb register model.
+      enforcement:
+        code:
+          - semiconductor_swarm/agents/agent1_planning/agent1_subgraph.py::run_agent1_hierarchical_planning
+        tests:
+          - tests/test_agent1.py::test_agent1_v35_generates_systemrdl_firmware_and_cocotb_model
+    - id: A1_VALIDATION_ROUTING
+      rule: Validator rejection must route to exact repair node or HITL at revision limit.
+      enforcement:
+        code:
+          - semiconductor_swarm/agents/agent1_planning/agent1_subgraph.py::route_validation_decision
+          - semiconductor_swarm/agents/agent1_planning/agent1_subgraph.py::route_after_repair
+        tests:
+          - tests/test_agent1.py::test_agent1_v3_revision_limit_routes_to_hitl
+          - tests/test_agent1.py::test_agent1_v36_repair_node_persists_repaired_spec_and_routes_back_to_validator

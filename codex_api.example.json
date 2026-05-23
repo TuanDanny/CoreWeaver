@@ -1,0 +1,5 @@
+{
+  "base_url": "http://localhost:20128/v1",
+  "model": "cx/gpt-5.5",
+  "api_key": "replace-with-local-owner-key"
+}

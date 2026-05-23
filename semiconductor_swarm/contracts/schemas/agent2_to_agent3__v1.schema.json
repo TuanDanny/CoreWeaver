@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent 2 to Agent 3 Contract v1",
+  "type": "object",
+  "required": ["contract_version", "project_name", "rtl_files", "test_targets", "artifacts"],
+  "properties": {
+    "contract_version": {"type": "string", "const": "agent2_to_agent3/v1"},
+    "project_name": {"type": "string"},
+    "rtl_files": {"type": "array"},
+    "test_targets": {"type": "array"},
+    "artifacts": {"type": "array"}
+  }
+}

@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: studio/frontend/package-lock.json
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r studio/backend/requirements.txt
+          python -m pip install -r requirements-dv.txt
+          python -m pip install langgraph langgraph-checkpoint-sqlite
+
+      - name: Install frontend dependencies
+        shell: pwsh
+        run: npm ci --prefix studio/frontend
+
+      - name: Python compile
+        shell: pwsh
+        run: python -m py_compile studio/backend/server.py studio/backend/config.py studio/backend/runner.py semiconductor_swarm/tracing.py
+
+      - name: Python tests
+        shell: pwsh
+        run: python -m pytest -q
+
+      - name: Frontend smoke tests
+        shell: pwsh
+        run: npm run test --prefix studio/frontend
+
+      - name: Frontend build
+        shell: pwsh
+        run: npm run build --prefix studio/frontend

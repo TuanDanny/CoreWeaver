@@ -1,0 +1,10 @@
+{
+  "checkpoint_db": ".swarm/app_checkpoints.sqlite",
+  "ops_pane_widths": [
+    306,
+    865,
+    649
+  ],
+  "planning_mode": "normal",
+  "sidebar_collapsed": false
+}

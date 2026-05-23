@@ -1,0 +1,148 @@
+version: 1
+last_reviewed: 2026-05-17
+owner: docs-governance
+purpose: Machine-checkable routing map for AI agents.
+
+top_level_maps:
+  - AGENTS.md
+  - ARCHITECTURE.md
+  - PLANS.md
+
+source_of_truth_docs:
+  design:
+    - docs/design-docs/core-beliefs.md
+    - docs/design-docs/repo-knowledge-store.md
+  product_specs:
+    - docs/product-specs/semiconductor-swarm.md
+    - docs/product-specs/agent1-system-architect.md
+    - docs/product-specs/agent2-rtl-designer.md
+    - docs/product-specs/agent3-dv-engineer.md
+    - docs/product-specs/agent4-physical-designer.md
+    - docs/product-specs/agent5-formal-verifier.md
+  governance:
+    - docs/governance/change-review-checklist.md
+    - docs/governance/docs-style-guide.md
+    - docs/governance/source-of-truth-policy.md
+    - docs/governance/docs-review-process.md
+    - docs/governance/stale-docs-policy.md
+    - docs/governance/harness-engineering-compliance-audit.md
+    - docs/governance/openai-harness-full-compliance-matrix.md
+  exec_plans:
+    - docs/exec-plans/active/harness-engineering-knowledge-store.md
+    - docs/exec-plans/active/Kiem_tra_toan_bo_Agent_AI.md
+    - docs/exec-plans/active/AGENT_2_V4_INDUSTRIAL_RTL_SIGNOFF_PLAN.md
+    - docs/exec-plans/active/SWARM_WIDE_CONTRACT_ISOLATION_AND_AGENT6_READY_PLAN.md
+    - docs/exec-plans/active/AGENT_3_DV_PRACTICAL_UPGRADE_PLAN.md
+    - docs/exec-plans/completed/harness-engineering-100-percent-plan.md
+    - docs/exec-plans/completed/openai-harness-full-compliance-plan.md
+    - docs/exec-plans/superseded/index.md
+    - docs/exec-plans/superseded/AGENT_2_Upgrade_V1.md
+    - docs/exec-plans/superseded/AGENT_2_V2_SWARM_OF_EXPERTS_PLAN.md
+    - docs/exec-plans/superseded/AGENT_2_V3_SEMANTIC_RTL_CLOSURE_PLAN.md
+  prompts:
+    - docs/prompts/index.md
+    - docs/prompts/canonical-prompts.md
+    - docs/prompts/prompt-lifecycle.md
+  task_cards:
+    - docs/agent-task-cards/index.md
+  legacy:
+    - docs/legacy/index.md
+  references:
+    - docs/references/index.md
+    - docs/references/openai-harness-engineering.md
+    - docs/references/openai-harness-engineering-full-notes.md
+
+task_routes:
+  repository_onboarding:
+    read:
+      - AGENTS.md
+      - ARCHITECTURE.md
+      - PLANS.md
+      - docs/design-docs/repo-knowledge-store.md
+  docs_change:
+    read:
+      - AGENTS.md
+      - docs/governance/docs-style-guide.md
+      - docs/governance/source-of-truth-policy.md
+      - docs/governance/docs-review-process.md
+      - docs/exec-plans/active/harness-engineering-knowledge-store.md
+      - docs/exec-plans/tech-debt-tracker.md
+  prompt_change:
+    read:
+      - docs/prompts/index.md
+      - docs/prompts/canonical-prompts.md
+      - docs/prompts/prompt-lifecycle.md
+      - docs/prompt_compliance_matrix.yaml
+      - tests/test_prompt_contracts.py
+  agent1_architecture:
+    read:
+      - docs/product-specs/agent1-system-architect.md
+      - docs/prompts/index.md
+      - tests/test_agent1.py
+  agent2_rtl:
+    read:
+      - docs/product-specs/agent2-rtl-designer.md
+      - docs/exec-plans/active/AGENT_2_V4_INDUSTRIAL_RTL_SIGNOFF_PLAN.md
+      - tests/test_agent2.py
+  agent3_dv:
+    read:
+      - docs/product-specs/agent3-dv-engineer.md
+      - docs/exec-plans/active/AGENT_3_DV_PRACTICAL_UPGRADE_PLAN.md
+      - tests/test_agent3.py
+      - tests/test_agent3_manifest.py
+      - tests/test_agent3_scoreboard.py
+      - tests/test_agent3_failure_classification.py
+      - tests/test_real_dv_tools.py
+  agent4_physical:
+    read:
+      - docs/product-specs/agent4-physical-designer.md
+      - tests/test_agent4.py
+      - tests/test_real_quartus_tools.py
+  agent5_formal:
+    read:
+      - docs/product-specs/agent5-formal-verifier.md
+      - tests/test_agent5.py
+      - tests/test_real_formal_tools.py
+  swarm_graph:
+    read:
+      - docs/product-specs/semiconductor-swarm.md
+      - semiconductor_swarm/swarm_graph.py
+      - tests/test_swarm_graph.py
+  full_agent_ai_audit:
+    read:
+      - docs/exec-plans/active/Kiem_tra_toan_bo_Agent_AI.md
+      - docs/semiconductor_swarm_ai.md
+      - AGENTS.md
+      - ARCHITECTURE.md
+      - PLANS.md
+      - docs/knowledge-map.yaml
+      - docs/prompts/index.md
+      - docs/prompt_compliance_matrix.yaml
+      - tests/test_prompt_contracts.py
+      - tests/test_agent_pipeline.py
+      - tests/test_swarm_graph.py
+
+canonical_prompts:
+  semiconductor_swarm_master: docs/semiconductor_swarm_ai.md
+  agent1_systemrdl_fw_upgrade: docs/prompts/v3.5_agent1_systemrdl_fw_upgrade.md
+  prompt_compliance_matrix: docs/prompt_compliance_matrix.yaml
+
+generated_indexes:
+  - docs/generated/agent-contract-index.md
+  - docs/generated/test-coverage-index.md
+  - docs/generated/prompt-contract-index.md
+  - docs/generated/tool-index.md
+  - docs/generated/index.md
+
+agent_task_cards:
+  - docs/agent-task-cards/index.md
+  - docs/agent-task-cards/repo-auditor.md
+  - docs/agent-task-cards/architect-agent.md
+  - docs/agent-task-cards/rtl-agent.md
+  - docs/agent-task-cards/formal-agent.md
+  - docs/agent-task-cards/dv-agent.md
+  - docs/agent-task-cards/physical-agent.md
+  - docs/agent-task-cards/docs-maintainer.md
+
+legacy_docs:
+  - docs/legacy/index.md

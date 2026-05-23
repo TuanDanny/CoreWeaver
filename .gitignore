@@ -1,0 +1,56 @@
+# Local API keys and machine-specific Codex settings.
+codex_api.local.json
+*.local.json
+.env
+.env.*
+!.env.example
+studio/settings.json
+app/settings.json
+
+# Generated outputs and local swarm state.
+outputs/
+.swarm/
+runs/
+swarm_out*/
+swarm_full_rerun_*/
+*_rerun_*/
+%OUT%/
+%DB%
+
+# Python/test caches.
+__pycache__/
+.pytest_cache/
+.pytest_tmp_*/
+.venv_dv/
+.pip_cache/
+.tmp_dv/
+.dv_bin/
+*.py[cod]
+
+# JavaScript/frontend local artifacts.
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Local swarm run artifacts and heavy EDA/simulation outputs.
+swarm_e2e_demo_fixed/
+swarm_e2e_demo_fixed.sqlite
+tmp_*/
+*.sqlite
+*.db
+*.log
+*.sof
+*.pof
+*.qpf
+*.qsf
+*.vcd
+*.fst
+*.wlf
+*.jou
+*.str
+*.rpt
+*.summary
+browser_profile/
+
+# Local working notes.
+history.md
