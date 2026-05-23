@@ -1,4 +1,4 @@
-# SWARM AI STUDIO V5.0
+# SWARM AI STUDIO
 
 Desktop UI for the Semiconductor Swarm AI workflow.
 
