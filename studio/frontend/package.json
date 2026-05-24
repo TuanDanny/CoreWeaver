@@ -9,6 +9,8 @@
     "test": "node scripts/smoke.mjs"
   },
   "dependencies": {
+    "@fontsource/inter": "^5.2.8",
+    "@fontsource/plus-jakarta-sans": "^5.2.8",
     "@radix-ui/react-dialog": "^1.1.15",
     "@vitejs/plugin-react": "^5.1.1",
     "lucide-react": "^0.562.0",
@@ -26,4 +28,3 @@
     "typescript": "^5.9.3"
   }
 }
-

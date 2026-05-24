@@ -15,7 +15,7 @@ export default {
         danger: "#ff4d5e"
       },
       fontFamily: {
-        ui: ["Segoe UI", "Inter", "San Francisco", "Helvetica", "Arial", "sans-serif"],
+        ui: ["Plus Jakarta Sans", "Inter", "Geist", "Satoshi", "Helvetica", "Arial", "sans-serif"],
         mono: ["Cascadia Code", "Consolas", "JetBrains Mono", "Courier New", "monospace"]
       },
       boxShadow: {
@@ -26,4 +26,3 @@ export default {
   },
   plugins: []
 };
-

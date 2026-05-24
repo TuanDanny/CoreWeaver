@@ -20,6 +20,19 @@ CRITICAL_EVENT_TYPES = {
     "agent1_council_node",
     "agent1_council_edge",
     "agent1_council_artifact",
+    "job_queued",
+    "job_started",
+    "job_progress",
+    "job_completed",
+    "job_failed",
+    "job_cancelled",
+    "attachment_staged",
+    "attachment_rejected",
+    "live_input_ack",
+    "live_input_consumed",
+    "live_input_error",
+    "runtime_event",
+    "watchdog_timeout",
 }
 MAX_EVENT_BYTES = 64 * 1024
 FIELD_LIMITS = {

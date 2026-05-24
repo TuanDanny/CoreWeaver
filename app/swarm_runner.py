@@ -52,6 +52,42 @@ if hasattr(sys.stderr, "reconfigure"):
 _EVENT_STDOUT = sys.stdout
 _RUN_ID = ""
 
+def _requirement_with_attachment_context(requirement: str, attachment_manifest: str, output_dir: Path) -> str:
+    if not attachment_manifest:
+        return requirement
+    manifest_path = Path(attachment_manifest).resolve(strict=False)
+    allowed_root = (output_dir / "inputs").resolve(strict=False)
+    try:
+        manifest_path.relative_to(allowed_root)
+    except ValueError:
+        log("attachment manifest rejected: outside output input sandbox", level="warning")
+        return requirement
+    context_path = manifest_path.with_name("attachment_context.md")
+    if not context_path.exists():
+        return requirement
+    context = context_path.read_text(encoding="utf-8", errors="replace")
+    artifact(manifest_path, output_dir)
+    artifact(context_path, output_dir)
+    trace_artifact_lineage(
+        "attachment_context.md",
+        source_nodes=["STUDIO.ATTACHMENT_STAGE"],
+        artifact_path=str(context_path),
+        kind="markdown",
+        output_dir=output_dir,
+    )
+    trace_event(
+        TRACE_FILES["studio_flow"],
+        phase="runner",
+        agent="runner",
+        node_id="RUNNER.ATTACHMENT_CONTEXT",
+        event_type="attachment_context_loaded",
+        status="pass",
+        payload={"manifest": str(manifest_path), "context_chars": len(context)},
+        output_dir=output_dir,
+        emit_live=False,
+    )
+    return f"{requirement.rstrip()}\n\nAttached input digest:\n{context}".strip()
+
 
 def _truncate_text(value: str, limit: int) -> tuple[str, bool]:
     if len(value.encode("utf-8", errors="replace")) <= limit:
@@ -402,6 +438,7 @@ def run_start(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     set_trace_context(run_id=_RUN_ID, thread_id=args.thread_id, flow_id="start_run", output_dir=output_dir, project_name=args.project_name)
+    requirement = _requirement_with_attachment_context(args.requirement, args.attachment_manifest, output_dir)
     status_tailer = StatusTailer(output_dir / "status.log")
     status_tailer.start()
     set_runtime_event_sink(emit)
@@ -416,8 +453,8 @@ def run_start(args: argparse.Namespace) -> int:
             payload={
                 "project_name": args.project_name,
                 "planning_mode": args.planning_mode,
-                "input_hash": sha256_text(args.requirement),
-                "input_preview": args.requirement[:600],
+                "input_hash": sha256_text(requirement),
+                "input_preview": requirement[:600],
             },
         )
         log(f"start project={args.project_name} thread={args.thread_id} planning_mode={args.planning_mode}")
@@ -433,7 +470,7 @@ def run_start(args: argparse.Namespace) -> int:
         trace_snapshot(
             "before_start_payload",
             {
-                "requirement": args.requirement,
+                "requirement": requirement,
                 "project_name": args.project_name,
                 "thread_id": args.thread_id,
                 "planning_mode": args.planning_mode,
@@ -445,7 +482,7 @@ def run_start(args: argparse.Namespace) -> int:
             with persistent_swarm_graph(args.checkpoint_db) as app:
                 state = app.invoke(
                     {
-                        "requirement": args.requirement,
+                        "requirement": requirement,
                         "project_name": args.project_name,
                         "thread_id": args.thread_id,
                         "output_dir": str(output_dir),
@@ -583,6 +620,7 @@ def build_parser() -> argparse.ArgumentParser:
         item.add_argument("--change", default="")
         item.add_argument("--resume-action", default="")
         item.add_argument("--planning-mode", choices=("normal", "deep_planning"), default="normal")
+        item.add_argument("--attachment-manifest", default="")
     return parser
 
 

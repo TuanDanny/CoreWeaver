@@ -16,5 +16,7 @@ source_of_truth: true
 - `AGENT_3_DV_PRACTICAL_UPGRADE_PLAN.md`
 - `AGENT_1_V6_4_REAL_CODEX_INTAKE_COUNCIL_PLAN.md`
 - `SWARM_AI_STUDIO_V6_5_FULL_AI_TRACKING_AGENT1_STABILIZATION_PLAN.md`
+- `COREWEAVER_HYBRID_AGENT_SERVICE_QUEUE_PLAN.md`
+- `COREWEAVER_V6_8_TRACKING_RECOVERY_PLAN.md`
 
 Historical Studio and Agent 1 upgrade plans before V6.5 live in `docs/exec-plans/archive/2026-05-pre-v65/`.

@@ -22,6 +22,7 @@ Use this map when preparing commits or reviewing pull requests.
 | Agent 4 physical | `semiconductor_swarm/agents/agent4_physical/` | Quartus/FPGA collateral |
 | Agent 5 formal | `semiconductor_swarm/agents/agent5_formal/` | SVA/SymbiYosys collateral |
 | Studio web | `studio/backend/`, `studio/frontend/src/` | FastAPI, WebSocket, React cockpit, tracking UI |
+| Studio job service | `studio/backend/agent_service.py`, `studio/backend/job_models.py`, `studio/backend/job_queue.py`, `studio/backend/model_gateway.py` | job contract, queue, service validation, provider boundary |
 | Tests | `tests/` | regression coverage matching source changes |
 
 ## Isolated Or Legacy Areas
@@ -53,5 +54,6 @@ These must not be committed:
 1. Repo hygiene: `.gitignore`, examples, CI, publishing docs.
 2. Core engine changes: `semiconductor_swarm/` plus focused tests.
 3. Studio backend changes: `studio/backend/` plus `tests/test_studio_backend.py`.
-4. Studio frontend changes: `studio/frontend/src/` plus `studio/frontend/scripts/smoke.mjs`.
-5. Docs-only changes: `docs/`, `README.md`, `ARCHITECTURE.md`, `PLANS.md`.
+4. Studio job service changes: `studio/backend/agent_service.py`, `studio/backend/job_*.py`, `tests/test_studio_jobs.py`.
+5. Studio frontend changes: `studio/frontend/src/` plus `studio/frontend/scripts/smoke.mjs`.
+6. Docs-only changes: `docs/`, `README.md`, `ARCHITECTURE.md`, `PLANS.md`.

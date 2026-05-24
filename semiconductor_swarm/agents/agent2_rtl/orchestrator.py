@@ -525,12 +525,16 @@ def _release_decision_payload(state: Agent2State, repair_trace: list[dict[str, A
     waivers = _release_waivers(state)
     open_blocking = _findings_without_waiver(blocking_findings, waivers)
     degraded_reasons = list(tool_health_matrix.get("degraded_reasons", []))
+    tool_health_blocking = list(tool_health_matrix.get("blocking_findings", []))
+    optional_tool_findings = list(tool_health_matrix.get("optional_smoke_findings", []))
     real_tool_gate = dict(tool_health_matrix.get("real_tool_gate", {}))
     requires_real_tools = bool(tool_health_matrix.get("requires_real_tools", real_tool_gate.get("requires_real_tools", False)))
     tool_gate_blocking = requires_real_tools and not bool(real_tool_gate.get("pass", False))
-    healthy = not open_blocking and not degraded_reasons and not tool_gate_blocking and bool(tool_health_matrix.get("pass", False))
+    demo_tool_ready = (not requires_real_tools) and bool(real_tool_gate.get("pass", True)) and not tool_health_blocking and not degraded_reasons
+    tool_health_ready = bool(tool_health_matrix.get("pass", False)) or demo_tool_ready
+    healthy = not open_blocking and not degraded_reasons and not tool_gate_blocking and not tool_health_blocking and tool_health_ready
     waived = bool(waivers) and not open_blocking
-    if open_blocking or tool_gate_blocking:
+    if open_blocking or tool_gate_blocking or tool_health_blocking:
         decision = "fail"
     elif degraded_reasons:
         decision = "degraded_tooling"
@@ -550,6 +554,8 @@ def _release_decision_payload(state: Agent2State, repair_trace: list[dict[str, A
         "handoff_ready": decision in {"pass", "pass_with_waivers"},
         "blocking_agent_ids": [entry.get("agent_id") for entry in failing],
         "blocking_findings": open_blocking,
+        "tool_health_blocking_findings": tool_health_blocking,
+        "optional_tool_findings": optional_tool_findings,
         "waived_findings": _waived_findings(blocking_findings, waivers),
         "waivers": waivers,
         "waiver_policy": {"required_fields": ["owner", "reason", "expiration", "signoff"], "expired_waivers_block_release": True, "scope": "agent2_release_decision"},

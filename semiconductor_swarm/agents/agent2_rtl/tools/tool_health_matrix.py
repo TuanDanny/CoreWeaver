@@ -33,7 +33,8 @@ def run_command(executable_name: str, stdin: str | None = None, cwd: str | None 
         proc = subprocess.run([executable], input=stdin, text=True, capture_output=True, timeout=30, check=False, cwd=cwd)
     except Exception as exc:  # pragma: no cover - platform/tool dependent
         return {"ran": True, "pass": False, "command": executable_name, "path": executable, "returncode": None, "stdout": "", "stderr": str(exc), "provenance": "smoke_exception", "blocking_findings": [{"severity": "error", "tool": executable_name, "message": str(exc)}]}
-    blocking = [] if proc.returncode == 0 else [{"severity": "error", "tool": executable_name, "message": (proc.stderr or proc.stdout)[-1000:]}]
+    message = (proc.stderr or proc.stdout or f"{executable_name} exited with returncode {proc.returncode}")[-1000:]
+    blocking = [] if proc.returncode == 0 else [{"severity": "error", "tool": executable_name, "message": message}]
     return {"ran": True, "pass": proc.returncode == 0, "command": executable_name, "path": executable, "returncode": proc.returncode, "stdout": proc.stdout[-1000:], "stderr": proc.stderr[-1000:], "provenance": "real_smoke_run", "blocking_findings": blocking}
 
 
@@ -46,7 +47,8 @@ def run_command_args(command: list[str], stdin: str | None = None, cwd: str | No
         proc = subprocess.run([executable, *command[1:]], input=stdin, text=True, capture_output=True, timeout=45, check=False, cwd=cwd, env=_tool_env())
     except Exception as exc:  # pragma: no cover - platform/tool dependent
         return {"ran": True, "pass": False, "command": command_text, "path": executable, "returncode": None, "stdout": "", "stderr": str(exc), "provenance": "tool_run_exception", "blocking_findings": [{"severity": "error", "tool": command[0], "message": str(exc)}]}
-    blocking = [] if proc.returncode == 0 else [{"severity": "error", "tool": command[0], "message": (proc.stderr or proc.stdout)[-1000:]}]
+    message = (proc.stderr or proc.stdout or f"{command_text} exited with returncode {proc.returncode}")[-1000:]
+    blocking = [] if proc.returncode == 0 else [{"severity": "error", "tool": command[0], "message": message}]
     return {"ran": True, "pass": proc.returncode == 0, "command": command_text, "path": executable, "returncode": proc.returncode, "stdout": proc.stdout[-4000:], "stderr": proc.stderr[-4000:], "provenance": "real_tool_run", "blocking_findings": blocking}
 
 
@@ -99,6 +101,7 @@ def build_tool_health_artifacts(spec: dict[str, Any], files: list[dict[str, Any]
             "fallback_policy": fallback_policy,
         },
         "blocking_findings": blocking_findings,
+        "optional_smoke_findings": [],
         "degraded_reasons": degraded_reasons,
         "pass": not blocking_findings and not degraded_reasons,
     }
@@ -109,12 +112,11 @@ def build_tool_health_artifacts(spec: dict[str, Any], files: list[dict[str, Any]
         matrix["blocking_findings"].extend(real_tool_gate_findings)
         matrix["degraded_reasons"].extend({"tool": finding["tool"], "reason": finding["rule"], "status": finding.get("tool_status")} for finding in real_tool_gate_findings)
         matrix["pass"] = False
-    if synthesis_smoke["ran"] and not synthesis_smoke["pass"]:
-        matrix["blocking_findings"].extend(synthesis_smoke["blocking_findings"])
-        matrix["pass"] = False
-    if formal_smoke["ran"] and not formal_smoke["pass"]:
-        matrix["blocking_findings"].extend(formal_smoke["blocking_findings"])
-        matrix["pass"] = False
+    if not requires_real_tools:
+        for smoke in [synthesis_smoke, formal_smoke]:
+            if smoke["ran"] and not smoke["pass"]:
+                matrix["optional_smoke_findings"].extend(_smoke_failure_findings(smoke, "optional_real_smoke_failed"))
+    matrix["pass"] = not matrix["blocking_findings"] and not matrix["degraded_reasons"]
     matrix["real_tool_gate"] = {
         "requires_real_tools": requires_real_tools,
         "pass": not real_tool_gate_findings,
@@ -162,6 +164,33 @@ def _real_tool_gate_findings(requires_real_tools: bool, smoke_reports: list[dict
     for smoke in smoke_reports:
         if not smoke.get("ran"):
             findings.append({"severity": "error", "rule": "required_real_smoke_not_run", "tool": smoke.get("tool"), "tool_status": smoke.get("tool_status"), "message": "strict/nightly mode requires real smoke run"})
+        elif not smoke.get("pass"):
+            findings.extend(_smoke_failure_findings(smoke, "required_real_smoke_failed"))
         if smoke.get("fallback_provenance") is not None:
             findings.append({"severity": "error", "rule": "fallback_forbidden", "tool": smoke.get("tool"), "tool_status": smoke.get("tool_status"), "message": "strict/nightly mode forbids fallback provenance"})
     return findings
+
+
+def _smoke_failure_findings(smoke: dict[str, Any], rule: str) -> list[dict[str, Any]]:
+    tool = str(smoke.get("tool") or "tool")
+    default = {
+        "severity": "error",
+        "rule": rule,
+        "tool": tool,
+        "tool_status": smoke.get("tool_status"),
+        "returncode": smoke.get("returncode"),
+        "message": f"{tool} smoke failed with returncode {smoke.get('returncode')}",
+    }
+    findings = list(smoke.get("blocking_findings", [])) or [default]
+    normalized = []
+    for finding in findings:
+        normalized.append({
+            **finding,
+            "severity": finding.get("severity", "error"),
+            "rule": finding.get("rule", rule),
+            "tool": finding.get("tool", tool),
+            "tool_status": finding.get("tool_status", smoke.get("tool_status")),
+            "returncode": finding.get("returncode", smoke.get("returncode")),
+            "message": finding.get("message") or default["message"],
+        })
+    return normalized

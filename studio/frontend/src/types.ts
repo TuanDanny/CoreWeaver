@@ -2,10 +2,30 @@ export type StageName = "planning" | "rtl" | "formal" | "hitl" | "dv" | "physica
 export type ConnectionState = "Connected" | "Reconnecting" | "Disconnected";
 export type PlanningMode = "normal" | "deep_planning";
 export type StartPolicy = "auto" | "fresh" | "continue";
+export type JobStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
+export type JobType = "agent1_plan_draft" | "agent2_rtl_draft" | "full_swarm_run" | "debug_bundle";
+export type AttachmentKind = "markdown" | "pdf" | "image";
+
+export type AttachmentRef = {
+  id: string;
+  name: string;
+  kind: AttachmentKind;
+  mimeType: string;
+  bytes: number;
+  sha256: string;
+  extractStatus: string;
+  extractedChars: number;
+  preview: string;
+};
+
+export type AttachmentStagePayload = {
+  draftId: string;
+  attachments: AttachmentRef[];
+};
 
 export type StudioEvent = {
   type: string;
-  event_id?: number;
+  event_id?: number | string;
   level?: string;
   message?: string;
   stage?: StageName;
@@ -32,6 +52,9 @@ export type RunState = {
   output_dir: string;
   planning_mode: PlanningMode;
   apiKeyRef: string;
+  attachment_manifest_path?: string;
+  attachment_context_path?: string;
+  job_id?: string;
   thread_id?: string;
   start_policy?: string;
   manifest_path?: string;
@@ -41,6 +64,70 @@ export type RunState = {
   pause: StudioEvent | null;
   current_plan_path: string | null;
   last_event_id: number;
+  runtime?: RuntimeCompact | null;
+};
+
+export type RuntimeEvent = {
+  type: "runtime_event";
+  schema_version: "studio.runtime_event.v1";
+  event_id: string;
+  correlation_id: string;
+  timestamp: string;
+  run_id: string;
+  job_id: string;
+  project_name: string;
+  agent: string;
+  phase: string;
+  node_id: string;
+  event_type: string;
+  status: string;
+  message: string;
+  duration_ms: number;
+  artifact_refs: string[];
+  metrics: Record<string, unknown>;
+  error: Record<string, unknown> | null;
+};
+
+export type RuntimeManifest = {
+  schema_version: string;
+  run_id: string;
+  job_id: string;
+  project_name: string;
+  output_dir: string;
+  planning_mode: string;
+  credential_ref: string;
+  status: string;
+  active_agent: string;
+  active_node_id: string;
+  last_runtime_event_at: string;
+  recoverable: boolean;
+  recovery_status: string;
+  agents: Record<string, unknown>;
+  nodes: Record<string, unknown>;
+  model_calls: Record<string, { agent?: string; node_id?: string; status?: string; duration_ms?: number; metrics?: Record<string, unknown>; message?: string; updated_at?: string }>;
+  queue: Record<string, unknown>;
+  metrics: Record<string, unknown>;
+  artifact_refs: string[];
+};
+
+export type RuntimeReport = Record<string, unknown> | null;
+
+export type RuntimeBundle = {
+  manifest: RuntimeManifest | null;
+  recentEvents: RuntimeEvent[];
+  recoveryReport: RuntimeReport;
+  invariantReport: RuntimeReport;
+  replayReport: RuntimeReport;
+  debugSummary: RuntimeReport;
+  errors?: string[];
+};
+
+export type RuntimeCompact = {
+  manifest?: RuntimeManifest | null;
+  recoveryReport?: RuntimeReport;
+  debugSummary?: RuntimeReport;
+  invariantReport?: RuntimeReport;
+  replayReport?: RuntimeReport;
 };
 
 export type CredentialRef = {
@@ -97,4 +184,31 @@ export type SettingsPayload = {
   activeKeyRef: string;
   credentialRefs: CredentialRef[];
   credentialHealth: Record<string, CredentialHealth>;
+  modelProviders?: Array<{ id: string; label: string; enabled: boolean; kind: string }>;
+};
+
+export type AgentJob = {
+  job_id: string;
+  run_id: string;
+  type: JobType;
+  status: JobStatus;
+  project_name: string;
+  requirement: string;
+  planning_mode: PlanningMode;
+  output_dir: string;
+  checkpoint_db: string;
+  credential_ref: string;
+  start_policy: StartPolicy;
+  attachment_draft_id?: string;
+  attachment_ids?: string[];
+  created_at: string;
+  started_at: string | null;
+  ended_at: string | null;
+  error: string | null;
+  artifact_refs: string[];
+};
+
+export type JobListPayload = {
+  jobs: AgentJob[];
+  queueHealth: Record<string, unknown>;
 };

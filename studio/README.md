@@ -11,6 +11,7 @@ studio\run_studio.bat
 Backend:
 - FastAPI on `http://127.0.0.1:8000`
 - WebSocket on `ws://127.0.0.1:8000/ws/runs/current`
+- Job API on `http://127.0.0.1:8000/api/jobs`
 
 Frontend:
 - Vite React on `http://127.0.0.1:5173`
@@ -29,6 +30,13 @@ Frontend:
 - Artifact preview is sandboxed to `outputs/` or the active output directory.
 - WebSocket uses heartbeat ping and local-origin checks.
 - Logs are batched and rendered with a capped UI store.
+
+## Job Queue
+- `POST /api/jobs` creates queue-backed jobs.
+- Supported V1 job types: `agent1_plan_draft`, `agent2_rtl_draft`, `full_swarm_run`, `debug_bundle`.
+- Queue backend is Python in-process for V1.
+- Redis/BullMQ remains future adapter work; the API shape is already isolated.
+- Run APIs still work for normal Start, Stop, Approve, and Resume.
 
 ## GitHub Hygiene
 - Commit `package.json` and `package-lock.json`.

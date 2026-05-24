@@ -1,4 +1,5 @@
 from semiconductor_swarm.agents.agent2_rtl.phase1_artifacts import build_phase1_artifacts
+from semiconductor_swarm.agents.agent2_rtl import rtl_linter
 from semiconductor_swarm.agents.agent2_rtl.semantic import build_rtl_module_index
 from semiconductor_swarm.agents.agent2_rtl.tools import verilator_adapter
 
@@ -74,3 +75,30 @@ def test_verilator_lint_materializes_in_memory_sv_before_invocation(monkeypatch)
     assert calls
     assert calls[0]["files"] == ["pkg.sv", "top.sv"]
     assert calls[0]["command"][-2:] == ["pkg.sv", "top.sv"]
+
+def test_verilator_self_check_skips_formal_contract_collateral(monkeypatch):
+    calls = []
+
+    class Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command, cwd=None, text=None, capture_output=None, timeout=None, env=None):
+        calls.append({"command": command, "env": env})
+        return Proc()
+
+    monkeypatch.setattr(rtl_linter.shutil, "which", lambda _name: "D:/APP/oss-cad-suite/bin/verilator_bin.exe")
+    monkeypatch.setattr(rtl_linter.subprocess, "run", fake_run)
+
+    result = rtl_linter._run_verilator_if_available(
+        [
+            {"filename": "top.sv", "language": "systemverilog", "content": "module top; endmodule\n"},
+            {"filename": "interface_contracts.sv", "language": "systemverilog", "content": "property p; @(posedge clk) a |-> ##[0:8] b; endproperty\n"},
+        ]
+    )
+
+    assert result["pass"] is True
+    assert calls
+    assert calls[0]["command"][-1].endswith("top.sv")
+    assert all("interface_contracts.sv" not in item for item in calls[0]["command"])

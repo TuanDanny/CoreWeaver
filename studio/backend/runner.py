@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from semiconductor_swarm.live_inputs import append_live_input
+from studio.backend.attachments import commit_staged_attachments
 from studio.backend.config import DEFAULT_CREDENTIAL_REF, ROOT, redact_secret_text, resolve_credential_ref
 from studio.backend.run_manifest import (
     OutputPolicyError,
@@ -20,6 +22,7 @@ from studio.backend.run_manifest import (
     output_conflict_message,
     write_manifest,
 )
+from studio.backend.runtime_tracking import RuntimeTracker
 from semiconductor_swarm.tracing import TRACE_FILES, trace_event
 
 EventSink = Callable[[dict[str, Any]], Awaitable[None]]
@@ -55,6 +58,9 @@ class RunState:
     checkpoint_db: str = ""
     planning_mode: str = "normal"
     api_key_ref: str = DEFAULT_CREDENTIAL_REF
+    attachment_manifest_path: str = ""
+    attachment_context_path: str = ""
+    job_id: str = ""
     thread_id: str = ""
     start_policy: str = "auto"
     manifest_path: str = ""
@@ -101,6 +107,9 @@ class RunState:
         elif kind == "error":
             self.status = "failed"
             self._mark_running_nodes_terminal("failed")
+        elif kind == "watchdog_timeout":
+            self.status = "stopped" if self.status == "stopping" else "failed"
+            self._mark_running_nodes_terminal(self.status)
 
     def _mark_running_nodes_terminal(self, status: str) -> None:
         for stage, stage_status in list(self.stages.items()):
@@ -121,6 +130,9 @@ class RunState:
             "checkpoint_db": self.checkpoint_db,
             "planning_mode": self.planning_mode,
             "apiKeyRef": self.api_key_ref,
+            "attachment_manifest_path": self.attachment_manifest_path,
+            "attachment_context_path": self.attachment_context_path,
+            "job_id": self.job_id,
             "thread_id": self.thread_id,
             "start_policy": self.start_policy,
             "manifest_path": self.manifest_path,
@@ -141,6 +153,7 @@ class RunnerManager:
         self._uses_default_command = command_builder is None
         self.process: asyncio.subprocess.Process | None = None
         self.state = RunState()
+        self.runtime_tracker = RuntimeTracker(root=root)
         self._lock = asyncio.Lock()
         self._reader_tasks: list[asyncio.Task[Any]] = []
         self._launch_seq = 0
@@ -199,10 +212,20 @@ class RunnerManager:
                 checkpoint_db=checkpoint_db,
                 planning_mode=planning_mode,
                 api_key_ref=str(payload.get("api_key_ref") or payload.get("apiKeyRef") or DEFAULT_CREDENTIAL_REF),
+                job_id=str(payload.get("job_id") or ""),
                 thread_id=thread_id,
                 start_policy=start_policy,
                 manifest_path=str(output_dir / "studio_run_manifest.json"),
             )
+            attachment_paths = commit_staged_attachments(
+                str(payload.get("attachment_draft_id") or payload.get("attachmentDraftId") or ""),
+                list(payload.get("attachment_ids") or payload.get("attachmentIds") or []),
+                output_dir,
+            )
+            if attachment_paths:
+                self.state.attachment_manifest_path = str(attachment_paths.get("attachment_manifest") or "")
+                self.state.attachment_context_path = str(attachment_paths.get("attachment_context") or "")
+            await self._publish_runtime_events(self.runtime_tracker.initialize_run(self.state.snapshot()))
             trace_event(
                 TRACE_FILES["studio_flow"],
                 phase="backend",
@@ -212,16 +235,25 @@ class RunnerManager:
                 status="running",
                 payload={
                     "run_id": run_id,
+                    "job_id": self.state.job_id,
                     "project_name": project_name,
                     "planning_mode": planning_mode,
                     "start_policy": start_policy,
                     "output_dir": str(output_dir),
                     "requirement_preview": str(payload.get("requirement") or "")[:600],
+                    "attachment_manifest": self.state.attachment_manifest_path,
                 },
                 output_dir=output_dir,
                 emit_live=False,
             )
-            payload = {**payload, "run_id": run_id, "thread_id": thread_id, "output_dir": str(output_dir), "planning_mode": planning_mode}
+            payload = {
+                **payload,
+                "run_id": run_id,
+                "thread_id": thread_id,
+                "output_dir": str(output_dir),
+                "planning_mode": planning_mode,
+                **attachment_paths,
+            }
             await self._launch("start", payload)
             return self.state.snapshot()
 
@@ -234,15 +266,48 @@ class RunnerManager:
                 raise RuntimeError("no run to resume")
             self.state.status = "starting"
             self.state.api_key_ref = str(payload.get("api_key_ref") or payload.get("apiKeyRef") or self.state.api_key_ref or DEFAULT_CREDENTIAL_REF)
+            self.state.job_id = str(payload.get("job_id") or self.state.job_id or "")
             self.state.checkpoint_db = str(payload.get("checkpoint_db") or payload.get("checkpointDb") or self.state.checkpoint_db)
             payload = {**payload, "run_id": self.state.run_id, "thread_id": self.state.thread_id, "output_dir": self.state.output_dir}
             await self._launch("resume", payload)
             return self.state.snapshot()
 
+    async def live_input(self, payload: dict[str, Any]) -> dict[str, Any]:
+        async with self._lock:
+            if not self.state.run_id:
+                raise RuntimeError("no run is active")
+            if self.state.status in {"idle", "stopped", "done", "failed"}:
+                raise RuntimeError(f"run is {self.state.status}; live input is closed")
+            if not self.state.output_dir:
+                raise RuntimeError("run output directory is unavailable")
+            record = append_live_input(
+                self.state.output_dir,
+                message=str(payload.get("message") or ""),
+                run_id=self.state.run_id,
+                client_message_id=str(payload.get("client_message_id") or payload.get("clientMessageId") or ""),
+            )
+            await self._emit(
+                {
+                    "type": "live_input_ack",
+                    "level": "info",
+                    "agent": "console",
+                    "status": "queued",
+                    "message": "queued to Agent1 checkpoint",
+                    "message_id": record["message_id"],
+                    "message_hash": record["message_hash"],
+                },
+                run_id=self.state.run_id,
+            )
+            return {"ok": True, "status": "queued", "message_id": record["message_id"], "run_id": self.state.run_id}
+
     async def stop(self) -> dict[str, Any]:
         async with self._lock:
             proc = self.process
             if proc is None or proc.returncode is not None:
+                if proc is not None:
+                    await self._drain_reader_tasks()
+                    if self.process is proc:
+                        self.process = None
                 self.state.status = "stopped" if self.state.run_id else "idle"
                 return self.state.snapshot()
             self.state.status = "stopping"
@@ -254,7 +319,7 @@ class RunnerManager:
                 node_id="API.POST_RUNS_STOP",
                 event_type="route_enter",
                 status="running",
-                payload={"run_id": self.state.run_id, "pid": proc.pid},
+                payload={"run_id": self.state.run_id, "job_id": self.state.job_id, "pid": proc.pid},
                 output_dir=self.state.output_dir,
                 emit_live=False,
             )
@@ -296,6 +361,33 @@ class RunnerManager:
     async def shutdown(self) -> None:
         if self.running():
             await self.stop()
+
+    async def check_watchdog(self, *, stale_timeout_s: float, dry_run: bool = False) -> list[dict[str, Any]]:
+        if not self.state.run_id or not self.state.output_dir:
+            return []
+        if self.state.status not in {"starting", "running", "stopping"}:
+            return []
+        stale = self.runtime_tracker.stale_snapshot(self.state.output_dir)
+        raw_age = stale.get("age_s")
+        age = float(raw_age) if isinstance(raw_age, (int, float)) else None
+        if age is None or age < stale_timeout_s:
+            return []
+        stale_kind = str(stale.get("stale_kind") or "")
+        if stale_kind != "model_call_stale":
+            stale_kind = "subprocess" if self.running() else "queue"
+        if self.state.status == "stopping":
+            stale_kind = "stopping"
+        reason = f"{stale_kind} runtime stale for {age:.1f}s (limit {stale_timeout_s:.1f}s)"
+        before = self.state.status
+        if not dry_run:
+            self.state.status = "stopped" if self.state.status == "stopping" else "failed"
+            self.state._mark_running_nodes_terminal(self.state.status)
+        events = self.runtime_tracker.watchdog_timeout(self.state.snapshot(), reason=reason, stale_kind=stale_kind)
+        self.runtime_tracker.write_recovery_report(self.state.snapshot(), reason=reason, action="watchdog_timeout", before_status=before)
+        await self._publish_runtime_events(events)
+        if events and self.event_sink is not None:
+            await self.event_sink({"type": "watchdog_timeout", "run_id": self.state.run_id, "job_id": self.state.job_id, "message": reason, "status": self.state.status})
+        return events
 
     async def _settle_paused_process(self) -> None:
         proc = self.process
@@ -393,6 +485,9 @@ class RunnerManager:
             "--planning-mode",
             planning_mode,
         ]
+        attachment_manifest = str(payload.get("attachment_manifest") or self.state.attachment_manifest_path or "")
+        if attachment_manifest:
+            args.extend(["--attachment-manifest", attachment_manifest])
         if command_name == "start":
             args.extend(["--requirement", str(payload.get("requirement") or self.state.requirement)])
         else:
@@ -436,6 +531,7 @@ class RunnerManager:
         code = await proc.wait()
         if launch_seq != self._launch_seq:
             return
+        await self._drain_reader_tasks()
         await self._emit({"type": "process_exit", "returncode": code}, run_id=run_id)
         if self.process is proc:
             self.process = None
@@ -450,6 +546,7 @@ class RunnerManager:
         except asyncio.TimeoutError:
             for task in tasks:
                 task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _emit(self, event: dict[str, Any], *, run_id: str | None = None) -> None:
         event_run_id = str(event.get("run_id") or run_id or self.state.run_id)
@@ -457,9 +554,24 @@ class RunnerManager:
             return
         if event_run_id:
             event = {**event, "run_id": event_run_id}
+        if self.state.job_id and not event.get("job_id"):
+            event = {**event, "job_id": self.state.job_id}
         clean = redact_secret_text(event)
         self.state.last_event_id += 1
         clean["event_id"] = self.state.last_event_id
         self.state.apply_event(clean)
+        runtime_events: list[dict[str, Any]] = []
+        try:
+            runtime_events = self.runtime_tracker.record_source_event(clean, self.state.snapshot())
+        except Exception as exc:
+            runtime_events = []
+            clean = {**clean, "runtime_tracking_error": str(exc)}
         if self.event_sink is not None:
             await self.event_sink(clean)
+            await self._publish_runtime_events(runtime_events)
+
+    async def _publish_runtime_events(self, events: list[dict[str, Any]]) -> None:
+        if self.event_sink is None:
+            return
+        for event in events:
+            await self.event_sink(event)

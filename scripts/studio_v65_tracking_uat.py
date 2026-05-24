@@ -388,6 +388,16 @@ def _poll_state(api_base: str, predicate, timeout_s: float = 120.0) -> dict[str,
         time.sleep(0.5)
     return state
 
+def _poll_jobs(api_base: str, predicate, timeout_s: float = 30.0) -> dict[str, Any]:
+    deadline = time.time() + timeout_s
+    payload: dict[str, Any] = {}
+    while time.time() < deadline:
+        _, payload = _request_json(f"{api_base}/api/jobs", timeout_s=10)
+        if predicate(payload):
+            return payload
+        time.sleep(0.25)
+    return payload
+
 
 def _edge_path() -> Path | None:
     for path in EDGE_CANDIDATES:
@@ -493,6 +503,8 @@ def _artifact_summary(output_dir: Path) -> dict[str, Any]:
 def _case_pass(summary: dict[str, Any]) -> bool:
     if summary.get("status_code") != 200 or summary.get("actual_action") != summary.get("expected_action"):
         return False
+    if not summary.get("job_id"):
+        return False
     artifacts = summary.get("artifacts", {})
     if artifacts.get("secret_hit_count") != 0:
         return False
@@ -585,6 +597,7 @@ def run_uat(evidence_dir: Path) -> dict[str, Any]:
                     "requirement": requirement,
                     "expected_action": expected_action,
                     "actual_action": action,
+                    "job_id": body.get("job_id"),
                     "status_code": status,
                     "state_status": state.get("status"),
                     "output_dir": str(output_dir),
@@ -595,6 +608,98 @@ def run_uat(evidence_dir: Path) -> dict[str, Any]:
                 summary["pass"] = _case_pass(summary)
                 report["cases"].append(summary)
                 if case_id == "minimum_cpu_apb_uart" and summary["pass"] and state.get("run_id"):
+                    debug_status, debug_body = _request_json(
+                        f"{api_base}/api/jobs",
+                        "POST",
+                        {
+                            "type": "debug_bundle",
+                            "project_name": case_id,
+                            "output_dir": str(output_dir),
+                            "planning_mode": "normal",
+                            "checkpoint_db": str(checkpoint_db),
+                            "apiKeyRef": "owner",
+                        },
+                    )
+                    debug_job_id = str(debug_body.get("job_id") or "")
+                    debug_jobs = _poll_jobs(
+                        api_base,
+                        lambda payload, target=debug_job_id: any(job.get("job_id") == target and job.get("status") == "completed" for job in payload.get("jobs", [])),
+                        timeout_s=20.0,
+                    )
+                    debug_job = next((job for job in debug_jobs.get("jobs", []) if job.get("job_id") == debug_job_id), {})
+                    report["cases"].append(
+                        {
+                            "case": "debug_bundle_job",
+                            "status_code": debug_status,
+                            "job_id": debug_job_id,
+                            "actual_status": debug_job.get("status"),
+                            "artifact_refs": debug_job.get("artifact_refs"),
+                            "pass": debug_status == 200 and debug_job.get("status") == "completed" and _artifact_summary(output_dir).get("secret_hit_count") == 0,
+                        }
+                    )
+                    rtl_status, rtl_body = _request_json(
+                        f"{api_base}/api/jobs",
+                        "POST",
+                        {
+                            "type": "agent2_rtl_draft",
+                            "project_name": case_id,
+                            "output_dir": str(output_dir),
+                            "planning_mode": "normal",
+                            "checkpoint_db": str(checkpoint_db),
+                            "apiKeyRef": "owner",
+                        },
+                    )
+                    rtl_job_id = str(rtl_body.get("job_id") or "")
+                    rtl_jobs = _poll_jobs(
+                        api_base,
+                        lambda payload, target=rtl_job_id: any(job.get("job_id") == target and job.get("status") == "completed" for job in payload.get("jobs", [])),
+                        timeout_s=30.0,
+                    )
+                    rtl_job = next((job for job in rtl_jobs.get("jobs", []) if job.get("job_id") == rtl_job_id), {})
+                    report["cases"].append(
+                        {
+                            "case": "agent2_draft_existing_plan_completed",
+                            "status_code": rtl_status,
+                            "job_id": rtl_job_id,
+                            "actual_status": rtl_job.get("status"),
+                            "artifact_refs": rtl_job.get("artifact_refs"),
+                            "pass": rtl_status == 200
+                            and rtl_job.get("status") == "completed"
+                            and any(str(path).endswith(".sv") for path in rtl_job.get("artifact_refs") or [])
+                            and (output_dir / "rtl" / "reports" / "rtl_manifest.json").is_file()
+                            and _artifact_summary(output_dir).get("secret_hit_count") == 0,
+                        }
+                    )
+                    missing_output = output_root / "agent2_missing_plan"
+                    agent2_status, agent2_body = _request_json(
+                        f"{api_base}/api/jobs",
+                        "POST",
+                        {
+                            "type": "agent2_rtl_draft",
+                            "project_name": "agent2_missing_plan",
+                            "output_dir": str(missing_output),
+                            "planning_mode": "normal",
+                            "checkpoint_db": str(checkpoint_db),
+                            "apiKeyRef": "owner",
+                        },
+                    )
+                    agent2_job_id = str(agent2_body.get("job_id") or "")
+                    agent2_jobs = _poll_jobs(
+                        api_base,
+                        lambda payload, target=agent2_job_id: any(job.get("job_id") == target and job.get("status") == "failed" for job in payload.get("jobs", [])),
+                        timeout_s=20.0,
+                    )
+                    agent2_job = next((job for job in agent2_jobs.get("jobs", []) if job.get("job_id") == agent2_job_id), {})
+                    report["cases"].append(
+                        {
+                            "case": "agent2_draft_missing_plan_fails",
+                            "status_code": agent2_status,
+                            "job_id": agent2_job_id,
+                            "actual_status": agent2_job.get("status"),
+                            "error": agent2_job.get("error"),
+                            "pass": agent2_status == 200 and agent2_job.get("status") == "failed" and "agent1_to_agent2 contract" in str(agent2_job.get("error")),
+                        }
+                    )
                     last_event_id = int(state.get("last_event_id") or 0)
                     last_pause_event_id = int((state.get("pause") or {}).get("event_id") or 0)
                     resume_payload = {"notes": "ok", "resume_action": action, "planning_mode": "normal", "apiKeyRef": "owner"}

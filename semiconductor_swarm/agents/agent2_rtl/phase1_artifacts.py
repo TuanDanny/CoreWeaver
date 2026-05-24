@@ -133,12 +133,14 @@ def _tool_report(schema: str, tool: str, tool_health: dict[str, Any], result: di
     result_status = str(result.get("tool_status") or probed_status)
     provenance = result.get("provenance")
     requires_real_tools = bool(tool_health.get("requires_real_tools"))
-    blocking_findings = list(result.get("blocking_findings", []))
+    result_findings = list(result.get("blocking_findings", []))
+    blocking_findings = list(result_findings) if requires_real_tools else []
+    nonblocking_findings = [] if requires_real_tools else result_findings
     report_pass = bool(result.get("pass"))
     if requires_real_tools and (result_status != "healthy" or provenance in {"degraded_tool_install", "tool_not_found_on_path", "not_run"}):
         report_pass = False
         blocking_findings.append({"severity": "error", "rule": "strict_tool_degraded_or_fallback", "tool": tool, "tool_status": result_status, "provenance": provenance, "message": "strict/nightly mode requires healthy real tool result without fallback"})
-    return {"schema_version": schema, "tool": tool, "tool_status": result_status, "ran": bool(result.get("ran")), "pass": report_pass, "command": result.get("command"), "returncode": result.get("returncode"), "stdout": result.get("stdout", ""), "stderr": result.get("stderr", ""), "blocking_findings": blocking_findings, "provenance": provenance, "environment": {"path": result.get("path"), "status": result_status, "probed_status": probed_status}}
+    return {"schema_version": schema, "tool": tool, "tool_status": result_status, "ran": bool(result.get("ran")), "pass": report_pass, "command": result.get("command"), "returncode": result.get("returncode"), "stdout": result.get("stdout", ""), "stderr": result.get("stderr", ""), "blocking_findings": blocking_findings, "nonblocking_findings": nonblocking_findings, "provenance": provenance, "environment": {"path": result.get("path"), "status": result_status, "probed_status": probed_status}}
 
 
 def _csr_codegen_report(spec: dict[str, Any]) -> dict[str, Any]:

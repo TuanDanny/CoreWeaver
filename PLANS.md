@@ -18,6 +18,8 @@
 - SWARM AI STUDIO V6.3 Agent 1 Council Debugger: `docs/exec-plans/active/SWARM AI STUDIO V6.3 Agent 1 Council Debugger Plan.md`
 - Agent 1 V6.4 Real Codex Intake and Council: `docs/exec-plans/active/AGENT_1_V6_4_REAL_CODEX_INTAKE_COUNCIL_PLAN.md`
 - SWARM AI STUDIO V6.5 Full AI Tracking and Agent1 Stabilization: `docs/exec-plans/active/SWARM_AI_STUDIO_V6_5_FULL_AI_TRACKING_AGENT1_STABILIZATION_PLAN.md`
+- CoreWeaver Hybrid Agent Service Queue: `docs/exec-plans/active/COREWEAVER_HYBRID_AGENT_SERVICE_QUEUE_PLAN.md`
+- CoreWeaver V6.8 Tracking and Recovery: `docs/exec-plans/active/COREWEAVER_V6_8_TRACKING_RECOVERY_PLAN.md`
 
 ## Deferred
 - Agent1 V4 Phase 1/2 work is paused until knowledge-store foundation is in place. See `docs/exec-plans/deferred/index.md`.

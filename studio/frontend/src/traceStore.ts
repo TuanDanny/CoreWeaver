@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { StudioEvent } from "./types";
+import type { RuntimeBundle, StudioEvent } from "./types";
 
 export type TraceEntry = {
   id: string;
@@ -20,6 +20,7 @@ export type TraceSnapshot = {
   selectedId: string | null;
   hydratedFromArtifacts: boolean;
   files: string[];
+  runtime: RuntimeBundle | null;
 };
 
 const MAX_TRACE = 5000;
@@ -51,7 +52,7 @@ function toEntry(record: Record<string, unknown>, traceFile = "live"): TraceEntr
 class TraceStore {
   private entries = new Map<string, TraceEntry>();
   private files = new Set<string>();
-  private snapshotValue: TraceSnapshot = { entries: [], selectedId: null, hydratedFromArtifacts: false, files: [] };
+  private snapshotValue: TraceSnapshot = { entries: [], selectedId: null, hydratedFromArtifacts: false, files: [], runtime: null };
   private listeners = new Set<() => void>();
   private timer: number | null = null;
 
@@ -63,12 +64,46 @@ class TraceStore {
   snapshot = () => this.snapshotValue;
 
   appendEvent(event: StudioEvent) {
-    if (event.type !== "trace_event") return;
-    const entry = toEntry(event as Record<string, unknown>, text(event.trace_file, "live"));
+    if (event.type !== "trace_event" && event.type !== "runtime_event" && !String(event.type).startsWith("job_")) return;
+    const record = event.type === "trace_event"
+      ? event as Record<string, unknown>
+      : event.type === "runtime_event"
+        ? {
+          ...event,
+          trace_id: `runtime:${text(event.event_id, String(Date.now()))}`,
+          trace_file: "runtime_events",
+          node_id: event.node_id ?? "RUNTIME.EVENT",
+          event_type: event.event_type ?? "runtime_event",
+          status: event.status ?? "info",
+          phase: event.phase ?? "studio",
+          agent: event.agent ?? "system",
+          summary: event.message ?? event.event_type ?? "runtime event",
+          latency_ms: event.duration_ms,
+        }
+      : {
+        ...event,
+        trace_id: `job:${text(event.job_id, "unknown")}:${text(event.type)}`,
+        trace_file: "live_job_events",
+        node_id: `JOB.${text(event.type).toUpperCase()}`,
+        event_type: event.type,
+        status: event.status ?? event.level ?? "info",
+        phase: "studio_job_queue",
+        agent: "studio",
+        summary: event.message ?? event.type,
+      };
+    const entry = toEntry(record as Record<string, unknown>, text(record.trace_file, "live"));
     this.entries.set(entry.id, entry);
     this.files.add(entry.trace_file);
     this.trim();
     this.schedule();
+  }
+
+  hydrateRuntimeBundle(bundle: RuntimeBundle) {
+    this.snapshotValue = { ...this.snapshotValue, runtime: bundle, hydratedFromArtifacts: true };
+    for (const event of bundle.recentEvents ?? []) {
+      this.appendEvent(event as unknown as StudioEvent);
+    }
+    this.emit();
   }
 
   hydrateJsonl(traceText: string, traceFile: string) {
@@ -97,7 +132,7 @@ class TraceStore {
   clear() {
     this.entries.clear();
     this.files.clear();
-    this.snapshotValue = { entries: [], selectedId: null, hydratedFromArtifacts: false, files: [] };
+    this.snapshotValue = { entries: [], selectedId: null, hydratedFromArtifacts: false, files: [], runtime: null };
     this.emit();
   }
 

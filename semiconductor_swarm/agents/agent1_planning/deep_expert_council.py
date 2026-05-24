@@ -19,6 +19,7 @@ from semiconductor_swarm.agents.agent1_planning.architect import (
     validate_plan_quality,
 )
 from semiconductor_swarm.agents.agent1_planning.context_provider import Agent1ContextProvider
+from semiconductor_swarm.live_inputs import consume_live_inputs_for_requirement
 from semiconductor_swarm.runtime_events import emit_runtime_event
 from semiconductor_swarm.tracing import TRACE_FILES, trace_event
 
@@ -279,6 +280,17 @@ def run_agent1_v51_council(
     guardrail_trace: list[dict[str, Any]] = []
     feedback: dict[str, Any] = {}
     for iteration in range(1, cfg.max_iterations + 1):
+        requirement, consumed = consume_live_inputs_for_requirement(requirement, f"agent1.council.iteration.{iteration}.start")
+        if consumed:
+            trace_event(
+                TRACE_FILES["agent1_council"],
+                phase="planning",
+                agent="agent1",
+                node_id="LIVE_INPUT.CONSUME",
+                event_type="live_input_checkpoint",
+                status="pass",
+                payload={"checkpoint": f"agent1.council.iteration.{iteration}.start", "count": len(consumed)},
+            )
         _emit_agent1_event(
             "agent_action",
             phase="planning",
@@ -330,6 +342,17 @@ def run_agent1_v51_council(
             context_provider=provider,
         )
         middle_records = execute_middle_managers(requirement, project_name, codex_call, leaf_records, config=cfg, iteration=iteration, context_provider=provider)
+        requirement, consumed = consume_live_inputs_for_requirement(requirement, f"agent1.council.iteration.{iteration}.principal")
+        if consumed:
+            trace_event(
+                TRACE_FILES["agent1_council"],
+                phase="planning",
+                agent="agent1",
+                node_id="LIVE_INPUT.CONSUME",
+                event_type="live_input_checkpoint",
+                status="pass",
+                payload={"checkpoint": f"agent1.council.iteration.{iteration}.principal", "count": len(consumed)},
+            )
         principal_record = execute_principal_architect(
             requirement,
             project_name,
@@ -471,6 +494,7 @@ def run_agent1_v51_council(
         "schema_version": "agent1.deep_council_result.v1",
         "project_name": project_name,
         "raw_requirement": requirement,
+        "effective_requirement": requirement,
         "config": topology_manifest(cfg),
         "iterations": iterations,
         "status": status,

@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import time
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from studio.backend import config
+from studio.backend import attachments as attachment_module
 from studio.backend.event_hub import EventHub, MAX_EVENT_BYTES
 from studio.backend.runner import RunState, RunnerManager
 import studio.backend.runner as runner_module
@@ -15,6 +17,10 @@ from studio.backend import secret_admin
 import studio.backend.server as server_module
 from studio.backend.server import create_app
 from studio.backend.run_manifest import MANIFEST_NAME
+from studio.backend.runtime_tracking import (
+    build_runtime_invariant_report,
+    RuntimeTracker,
+)
 import app.swarm_runner as swarm_runner
 
 def _configure_owner_key(tmp_path, monkeypatch, key: str = "secret-key") -> None:
@@ -47,6 +53,20 @@ def test_cors_allows_vite_local_origin():
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+def test_cors_allows_attachment_delete_from_vite_origin():
+    client = TestClient(create_app())
+
+    response = client.options(
+        "/api/attachments/stage/draft-id/attachment-id",
+        headers={
+            "Origin": "http://127.0.0.1:5173",
+            "Access-Control-Request-Method": "DELETE",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
 
 
 def test_cors_and_websocket_allow_alternate_local_dev_port():
@@ -405,6 +425,32 @@ def _fake_slow_intake_command(_command_name, _payload):
         "import json,time; print(json.dumps({'type':'agent_action','agent':'agent1','status':'running','action':'Intake'}), flush=True); time.sleep(30); print(json.dumps({'type':'agent_action','agent':'agent2','status':'running','action':'late RTL'}), flush=True)",
     ]
 
+def _fake_model_call_hang_command(_command_name, _payload):
+    return [
+        "python",
+        "-c",
+        "import json,time; print(json.dumps({'type':'agent_action','agent':'agent1','phase':'planning','status':'running','action':'Codex request started','summary':'Calling cx/gpt-5.5 at http://localhost:20128/v1'}), flush=True); time.sleep(30)",
+    ]
+
+def _fake_runtime_tracking_command(_command_name, payload):
+    artifact = Path(payload["output_dir"]) / "reports" / "architecture_plan.md"
+    code = (
+        "import json,pathlib;"
+        f"p=pathlib.Path({str(artifact)!r});"
+        "p.parent.mkdir(parents=True, exist_ok=True);"
+        "p.write_text('plan', encoding='utf-8');"
+        "events=["
+        "{'type':'agent_action','agent':'agent1','phase':'planning','status':'running','action':'Codex request started','summary':'Calling cx/gpt-5.5 at http://localhost:20128/v1'},"
+        "{'type':'agent_action','agent':'agent1','phase':'planning','status':'pass','action':'Codex response received','summary':'Model returned architecture evidence','metric':{'latency_s':0.25,'total_tokens':3}},"
+        "{'type':'agent_handoff','from_agent':'agent1','to_agent':'agent2','contract':'agent1_to_agent2','status':'pass','summary':'Architecture contract released'},"
+        "{'type':'metric','agent':'agent1','status':'info','name':'codex_total_tokens','value':3},"
+        f"{{'type':'artifact','agent':'agent1','path':{str(artifact)!r},'kind':'markdown','bytes':4}},"
+        "{'type':'done','status':'OK'}"
+        "];"
+        "[print(json.dumps(e), flush=True) for e in events]"
+    )
+    return ["python", "-c", code]
+
 
 def test_start_rejects_second_active_run_and_stop_kills_fake_runner(tmp_path):
     async def scenario():
@@ -490,6 +536,215 @@ def test_runner_injects_key_ref_secret_only_via_env(tmp_path, monkeypatch):
     assert "secret-key" not in command_text
     assert "secret-key" not in str(state)
     assert state["apiKeyRef"] == "owner"
+
+def test_runtime_tracking_writes_events_manifest_and_secret_safe_summary(tmp_path):
+    async def scenario():
+        output_dir = tmp_path / "outputs" / "runtime"
+        manager = RunnerManager(root=tmp_path, command_builder=_fake_runtime_tracking_command)
+        state = await manager.start({"requirement": "Generate APB UART", "project_name": "runtime", "output_dir": str(output_dir), "apiKeyRef": "owner", "start_policy": "fresh"})
+        deadline = time.time() + 2
+        while (manager.running() or manager.state.status in {"starting", "running"}) and time.time() < deadline:
+            await asyncio.sleep(0.02)
+        await manager._drain_reader_tasks()
+        return state, output_dir
+
+    state, output_dir = asyncio.run(scenario())
+    traces = output_dir / "reports" / "traces"
+    events = [json.loads(line) for line in (traces / "runtime_events.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    manifest = config._read_json(traces / "runtime_session_manifest.json")
+    recovery = config._read_json(traces / "runtime_recovery_report.json")
+    invariant = config._read_json(traces / "runtime_invariant_report.json")
+    replay = config._read_json(traces / "runtime_replay_report.json")
+    summary = config._read_json(traces / "runtime_debug_summary.json")
+    text = "\n".join(path.read_text(encoding="utf-8") for path in [traces / "runtime_events.jsonl", traces / "runtime_session_manifest.json", traces / "runtime_debug_summary.json"])
+
+    assert state["run_id"]
+    assert events[0]["event_type"] == "run_init"
+    assert any(event["event_type"] == "model_call_start" for event in events)
+    assert any(event["event_type"] == "model_call_done" for event in events)
+    assert any(event["event_type"] == "tool_call_start" for event in events)
+    assert any(event["event_type"] == "tool_call_done" for event in events)
+    assert any(event["event_type"] == "artifact_written" for event in events)
+    assert manifest["run_id"] == state["run_id"]
+    assert manifest["status"] == "done"
+    assert manifest["active_agent"] == ""
+    assert manifest["active_node_id"] == ""
+    assert manifest["metrics"]["byAgent"]["agent1"]["callCount"] >= 1
+    assert recovery["reason"] == "none"
+    assert recovery["action"] == "none"
+    assert recovery["after_status"] == "done"
+    assert invariant["ok"] is True
+    assert replay["event_count"] == len(events)
+    assert replay["by_source_type"]
+    assert summary["event_count"] == len(events)
+    assert "secret-key" not in text
+    assert "Bearer " not in text
+
+def test_runtime_api_returns_manifest_and_recent_events(tmp_path, monkeypatch):
+    _configure_owner_key(tmp_path, monkeypatch)
+
+    async def fake_probe(_endpoint: str, _model: str, _api_key: str):
+        return {"ok": True, "message": "Connection OK"}
+
+    monkeypatch.setattr(server_module, "_probe_openai_compatible_endpoint", fake_probe)
+    output_dir = tmp_path / "outputs" / "runtime_api"
+    manager = RunnerManager(root=tmp_path, command_builder=_fake_runtime_tracking_command)
+    with TestClient(create_app(manager, connection_test_cooldown_s=0.0, runtime_watchdog_enabled=False)) as client:
+        started = client.post("/api/runs/start", json={"requirement": "Generate APB UART", "project_name": "runtime_api", "output_dir": str(output_dir), "startPolicy": "fresh"})
+        assert started.status_code == 200
+        run_id = started.json()["run_id"]
+        response = client.get(f"/api/runs/{run_id}/runtime")
+        stopped = client.post(f"/api/runs/{run_id}/stop")
+        assert response.status_code == 200
+        assert stopped.status_code == 200
+        payload = response.json()
+        assert payload["manifest"]["run_id"] == run_id
+        assert payload["recentEvents"]
+        assert payload["recoveryReport"]["reason"] == "none"
+        assert "secret-key" not in response.text
+
+def test_runtime_api_hydrates_custom_indexed_output_after_restart(tmp_path):
+    output_dir = tmp_path / "custom_runtime_root" / "custom_run"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {
+        "run_id": "run-custom",
+        "job_id": "job-custom",
+        "status": "done",
+        "project_name": "custom",
+        "output_dir": str(output_dir),
+        "planning_mode": "normal",
+    }
+    tracker.initialize_run(state)
+    tracker.record_source_event({"type": "done", "status": "OK"}, state)
+    manager = RunnerManager(root=tmp_path)
+    client = TestClient(create_app(manager, runtime_watchdog_enabled=False))
+
+    current = client.get("/api/runs/current_state")
+    runtime = client.get("/api/runs/run-custom/runtime")
+
+    assert current.status_code == 200
+    assert current.json()["run_id"] == "run-custom"
+    assert current.json()["output_dir"] == str(output_dir)
+    assert runtime.status_code == 200
+    assert runtime.json()["manifest"]["run_id"] == "run-custom"
+    assert runtime.json()["recoveryReport"]["reason"] == "none"
+
+def test_runtime_api_reports_corrupt_active_manifest(tmp_path):
+    output_dir = tmp_path / "outputs" / "corrupt"
+    traces = output_dir / "reports" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "runtime_session_manifest.json").write_text("{bad json", encoding="utf-8")
+    manager = RunnerManager(root=tmp_path)
+    manager.state = RunState(run_id="run-corrupt", status="running", project_name="corrupt", output_dir=str(output_dir))
+    client = TestClient(create_app(manager, runtime_watchdog_enabled=False))
+
+    response = client.get("/api/runs/run-corrupt/runtime")
+
+    assert response.status_code == 409
+    assert "manifest corrupt" in response.json()["detail"]
+    assert (traces / "runtime_recovery_report.json").is_file()
+
+def test_runtime_watchdog_marks_stale_run_failed_once(tmp_path):
+    async def scenario():
+        manager = RunnerManager(root=tmp_path, command_builder=_fake_runner_command)
+        await manager.start({"requirement": "demo", "project_name": "watchdog", "output_dir": str(tmp_path / "outputs" / "watchdog"), "start_policy": "fresh"})
+        await asyncio.sleep(0.05)
+        first = await manager.check_watchdog(stale_timeout_s=0.0)
+        second = await manager.check_watchdog(stale_timeout_s=0.0)
+        await manager.stop()
+        return manager, first, second
+
+    manager, first, second = asyncio.run(scenario())
+
+    assert first
+    assert first[0]["event_type"] == "watchdog_timeout"
+    assert second == []
+    assert (Path(manager.state.output_dir) / "reports" / "traces" / "runtime_recovery_report.json").is_file()
+
+def test_runtime_watchdog_classifies_active_model_call_stale(tmp_path):
+    async def scenario():
+        manager = RunnerManager(root=tmp_path, command_builder=_fake_model_call_hang_command)
+        await manager.start({"requirement": "demo", "project_name": "watchdog_model", "output_dir": str(tmp_path / "outputs" / "watchdog_model"), "start_policy": "fresh"})
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            events = (Path(manager.state.output_dir) / "reports" / "traces" / "runtime_events.jsonl").read_text(encoding="utf-8", errors="replace")
+            if "model_call_start" in events:
+                break
+            await asyncio.sleep(0.01)
+        first = await manager.check_watchdog(stale_timeout_s=0.0)
+        await manager.stop()
+        return first
+
+    first = asyncio.run(scenario())
+
+    assert first
+    assert first[0]["node_id"] == "WATCHDOG.MODEL_CALL_STALE"
+    assert first[0]["error"]["stale_kind"] == "model_call_stale"
+
+def test_runtime_watchdog_recent_backend_progress_is_not_stale(tmp_path):
+    async def scenario():
+        manager = RunnerManager(root=tmp_path, command_builder=_fake_runner_command)
+        await manager.start({"requirement": "demo", "project_name": "watchdog_recent", "output_dir": str(tmp_path / "outputs" / "watchdog_recent"), "start_policy": "fresh"})
+        await asyncio.sleep(0.05)
+        first = await manager.check_watchdog(stale_timeout_s=3600.0)
+        await manager.stop()
+        return first
+
+    assert asyncio.run(scenario()) == []
+
+def test_runtime_invariant_fails_strict_tool_pair_left_open(tmp_path):
+    output_dir = tmp_path / "outputs" / "strict_tool"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-strict", "status": "done", "project_name": "strict", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+    tracker._write_events(
+        state,
+        [
+            tracker._build_event(
+                state=state,
+                event_type="tool_call_start",
+                status="running",
+                message="tool started",
+                agent="agent1",
+                phase="planning",
+                node_id="TOOL.TEST",
+                correlation_id="tool:run-strict:agent1:TOOL.TEST:demo:1",
+                source={"type": "test"},
+            )
+        ],
+    )
+
+    report = build_runtime_invariant_report(output_dir)
+
+    assert report["ok"] is False
+    assert any(item["code"] == "start_without_done" and item["kind"] == "tool_call" for item in report["failures"])
+
+def test_runtime_invariant_fails_tool_done_without_start(tmp_path):
+    output_dir = tmp_path / "outputs" / "strict_tool_done"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-strict-done", "status": "done", "project_name": "strict", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+    tracker._write_events(
+        state,
+        [
+            tracker._build_event(
+                state=state,
+                event_type="tool_call_done",
+                status="passed",
+                message="tool done",
+                agent="agent1",
+                phase="planning",
+                node_id="TOOL.TEST",
+                correlation_id="tool:missing",
+                source={"type": "test"},
+            )
+        ],
+    )
+
+    report = build_runtime_invariant_report(output_dir)
+
+    assert report["ok"] is False
+    assert any(item["code"] == "done_without_start" and item["kind"] == "tool_call" for item in report["failures"])
 
 def test_stop_during_intake_kills_process_tree_without_late_agent2_events(tmp_path):
     events = []
@@ -892,6 +1147,76 @@ def test_stop_current_alias_stops_active_run_without_frontend_run_id(tmp_path, m
     assert started.status_code == 200
     assert stopped.status_code == 200
     assert stopped.json()["status"] == "stopped"
+
+def test_attachment_stage_rejects_unsupported_type_and_never_returns_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(attachment_module, "STAGED_ROOT", tmp_path / ".swarm" / "staged_inputs")
+    client = TestClient(create_app())
+
+    ok = client.post(
+        "/api/attachments/stage",
+        files=[("files", ("spec.md", b"# Spec\nUse APB and UART.", "text/markdown"))],
+    )
+    assert ok.status_code == 200
+    body = ok.json()
+    assert body["draftId"]
+    assert body["attachments"][0]["kind"] == "markdown"
+    assert "path" not in body["attachments"][0]
+
+    blocked = client.post(
+        "/api/attachments/stage",
+        files=[("files", ("tool.exe", b"MZ", "application/octet-stream"))],
+    )
+    assert blocked.status_code == 415
+
+
+def test_start_with_attachment_writes_manifest_and_context(tmp_path, monkeypatch):
+    monkeypatch.setattr(attachment_module, "STAGED_ROOT", tmp_path / ".swarm" / "staged_inputs")
+    _configure_owner_key(tmp_path, monkeypatch)
+
+    async def fake_probe(_endpoint: str, _model: str, _api_key: str):
+        return {"ok": True, "message": "Connection OK"}
+
+    monkeypatch.setattr(server_module, "_probe_openai_compatible_endpoint", fake_probe)
+    manager = RunnerManager(root=tmp_path, command_builder=_fake_quick_runner_command)
+    with TestClient(create_app(manager, connection_test_cooldown_s=0.0)) as client:
+        upload = client.post(
+            "/api/attachments/stage",
+            files=[("files", ("req.md", b"# Requirement\nUse APB and UART.", "text/markdown"))],
+        )
+        draft = upload.json()
+        output_dir = tmp_path / "outputs" / "attached"
+        started = client.post(
+            "/api/runs/start",
+            json={
+                "requirement": "Build attached IP",
+                "project_name": "attached",
+                "output_dir": str(output_dir),
+                "startPolicy": "fresh",
+                "attachmentDraftId": draft["draftId"],
+                "attachmentIds": [draft["attachments"][0]["id"]],
+            },
+        )
+        assert started.status_code == 200
+        stopped = client.post(f"/api/runs/{started.json()['run_id']}/stop")
+        assert stopped.status_code == 200
+    assert (output_dir / "inputs" / "attachments_manifest.json").exists()
+    context = (output_dir / "inputs" / "attachment_context.md").read_text(encoding="utf-8")
+    assert "Use APB and UART" in context
+
+
+def test_live_input_running_run_queues_without_resume(tmp_path, monkeypatch):
+    manager = RunnerManager(root=tmp_path, command_builder=_fake_runner_command)
+    output_dir = tmp_path / "outputs" / "live"
+    output_dir.mkdir(parents=True)
+    manager.state = RunState(run_id="run-live", status="running", project_name="live", output_dir=str(output_dir))
+    client = TestClient(create_app(manager, connection_test_cooldown_s=0.0))
+
+    queued = client.post("/api/runs/run-live/live-input", json={"message": "Add I2C follow-up now", "clientMessageId": "msg-1"})
+    assert queued.status_code == 200
+    assert queued.json()["status"] == "queued"
+    queue_text = (output_dir / "inputs" / "live_input_queue.jsonl").read_text(encoding="utf-8")
+    assert "Add I2C follow-up now" in queue_text
+
 
 def test_artifact_preview_sandbox_and_extension_allowlist(tmp_path, monkeypatch):
     outputs = tmp_path / "outputs"

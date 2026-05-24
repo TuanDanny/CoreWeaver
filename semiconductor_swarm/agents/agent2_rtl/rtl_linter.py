@@ -1,6 +1,7 @@
 """Static RTL linter used by Agent 2 self-checks."""
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -66,16 +67,20 @@ def _run_verilator_if_available(rtl_files: list[dict[str, Any]]) -> dict[str, An
     if not verilator:
         return {"tool": "static_fallback", "available": False, "pass": True, "stdout": "", "stderr": ""}
     tool_name = Path(verilator).name
+    lint_files = [file for file in rtl_files if _is_verilator_lint_candidate(file)]
+    if not lint_files:
+        return {"tool": "static_fallback", "available": bool(verilator), "pass": True, "stdout": "", "stderr": "", "reason": "no_synthesizable_lint_candidates"}
     with tempfile.TemporaryDirectory(prefix="agent2_verilator_") as tmp:
         tmp_path = Path(tmp)
         paths = []
-        for file in rtl_files:
+        for file in lint_files:
             path = tmp_path / Path(str(file.get("filename", "rtl.sv"))).name
             path.write_text(str(file.get("content", "")), encoding="utf-8")
             paths.append(str(path))
-        proc = subprocess.run([verilator, "--lint-only", "-sv", *paths], cwd=tmp_path, text=True, capture_output=True, timeout=120)
+        proc = subprocess.run([verilator, "--lint-only", "-sv", *paths], cwd=tmp_path, text=True, capture_output=True, timeout=120, env=_verilator_env(verilator))
         if proc.returncode != 0:
             syntax_error = "syntax error" in proc.stderr.lower()
+            unsupported_feature = "unsupported" in proc.stderr.lower()
             return {
                 "tool": tool_name if syntax_error else "static_fallback",
                 "attempted_tool": tool_name,
@@ -84,6 +89,27 @@ def _run_verilator_if_available(rtl_files: list[dict[str, Any]]) -> dict[str, An
                 "stdout": proc.stdout,
                 "stderr": proc.stderr,
                 "returncode": proc.returncode,
-                "reason": "verilator_syntax_error" if syntax_error else "verilator_environment_failed_using_static_fallback",
+                "reason": "verilator_syntax_error" if syntax_error else ("verilator_unsupported_feature_using_static_fallback" if unsupported_feature else "verilator_environment_failed_using_static_fallback"),
+                "files_checked": [Path(path).name for path in paths],
             }
-        return {"tool": tool_name, "available": True, "pass": True, "stdout": proc.stdout, "stderr": proc.stderr, "returncode": proc.returncode}
+        return {"tool": tool_name, "available": True, "pass": True, "stdout": proc.stdout, "stderr": proc.stderr, "returncode": proc.returncode, "files_checked": [Path(path).name for path in paths]}
+
+
+def _is_verilator_lint_candidate(file: dict[str, Any]) -> bool:
+    name = Path(str(file.get("filename", ""))).name
+    content = str(file.get("content", ""))
+    if name == "interface_contracts.sv":
+        return False
+    if re.search(r"\b(property|sequence)\b|assert\s+property|assume\s+property|cover\s+property", content):
+        return False
+    return True
+
+
+def _verilator_env(executable: str) -> dict[str, str]:
+    env = os.environ.copy()
+    if env.get("VERILATOR_ROOT"):
+        return env
+    root = Path(executable).resolve().parent.parent / "share" / "verilator"
+    if (root / "include" / "verilated_std.sv").exists():
+        env["VERILATOR_ROOT"] = str(root)
+    return env

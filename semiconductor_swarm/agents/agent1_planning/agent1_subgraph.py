@@ -20,6 +20,7 @@ from semiconductor_swarm.agents.agent1_planning.deep_expert_council import Agent
 from semiconductor_swarm.agents.agent1_planning.intake_council import build_intake_artifacts, build_requirement_clarification_markdown, intake_ready_for_council, run_agent1_intake_council
 from semiconductor_swarm.agents.agent1_planning.proofs_v41 import attach_v41_artifacts
 from semiconductor_swarm.agents.agent1_planning.spec_schema import attach_agent1_contract_manifest, attach_tool_provenance, validate_agent1_v37_spec_schema, validate_agent1_v4_spec_schema
+from semiconductor_swarm.live_inputs import consume_live_inputs_for_requirement
 from semiconductor_swarm.tracing import TRACE_FILES, trace_artifact_lineage, trace_completion, trace_event, trace_snapshot
 
 
@@ -198,6 +199,17 @@ def run_agent1_hierarchical_planning(requirement: str, project_name: str, planni
     still come only from deterministic tools via ``generate_architecture_spec``.
     """
     planning_mode = planning_mode or "normal"
+    requirement, consumed = consume_live_inputs_for_requirement(requirement, "agent1.intake.before")
+    if consumed:
+        trace_event(
+            TRACE_FILES["agent1_intake"],
+            phase="planning",
+            agent="agent1",
+            node_id="LIVE_INPUT.CONSUME",
+            event_type="live_input_checkpoint",
+            status="pass",
+            payload={"checkpoint": "agent1.intake.before", "count": len(consumed)},
+        )
     trace_event(
         TRACE_FILES["agent1_intake"],
         phase="planning",
@@ -211,6 +223,22 @@ def run_agent1_hierarchical_planning(requirement: str, project_name: str, planni
         intake_report = run_agent1_intake_council(requirement, project_name, call_agent1_codex)
     except Exception as exc:  # pragma: no cover - exact urllib errors vary by OS
         raise Agent1CodexUnavailable(str(exc)) from exc
+    after_intake_requirement, consumed = consume_live_inputs_for_requirement(requirement, "agent1.council.before")
+    if consumed:
+        requirement = after_intake_requirement
+        trace_event(
+            TRACE_FILES["agent1_intake"],
+            phase="planning",
+            agent="agent1",
+            node_id="LIVE_INPUT.CONSUME",
+            event_type="live_input_checkpoint",
+            status="pass",
+            payload={"checkpoint": "agent1.council.before", "count": len(consumed), "rerun_intake": True},
+        )
+        try:
+            intake_report = run_agent1_intake_council(requirement, project_name, call_agent1_codex)
+        except Exception as exc:  # pragma: no cover - exact urllib errors vary by OS
+            raise Agent1CodexUnavailable(str(exc)) from exc
     intake_artifacts = build_intake_artifacts(intake_report)
     if not intake_ready_for_council(intake_report):
         trace_event(
@@ -244,6 +272,7 @@ def run_agent1_hierarchical_planning(requirement: str, project_name: str, planni
             config=Agent1CouncilConfig(planning_mode=planning_mode),
             intake_report=intake_report,
         )
+        effective_requirement = str(v51_result.get("effective_requirement") or effective_requirement)
         trace_event(
             TRACE_FILES["agent1_council"],
             phase="planning",
