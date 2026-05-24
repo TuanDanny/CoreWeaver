@@ -68,7 +68,7 @@ Optional for real FPGA backend compile:
 
 - Intel Quartus command-line tools on `PATH`, especially `quartus_sh`.
 
-## Setup From A-Z
+## Setup
 
 Run commands from the repository root.
 
