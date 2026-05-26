@@ -12,11 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_FILES = [
     "AGENTS.md",
     "ARCHITECTURE.md",
-    "PLANS.md",
     "docs/knowledge-map.yaml",
-    "docs/exec-plans/completed/harness-engineering-100-percent-plan.md",
-    "docs/exec-plans/completed/openai-harness-full-compliance-plan.md",
-    "docs/exec-plans/superseded/index.md",
     "docs/governance/docs-style-guide.md",
     "docs/governance/source-of-truth-policy.md",
     "docs/governance/docs-review-process.md",
@@ -29,7 +25,6 @@ REQUIRED_FILES = [
 FRONTMATTER_REQUIRED_DIRS = [
     ROOT / "docs" / "design-docs",
     ROOT / "docs" / "product-specs",
-    ROOT / "docs" / "exec-plans",
     ROOT / "docs" / "prompts",
     ROOT / "docs" / "generated",
     ROOT / "docs" / "references",
@@ -122,45 +117,38 @@ def check_knowledge_map_paths(errors: list[str]) -> None:
         if not repo_path(candidate).exists():
             errors.append(f"knowledge-map missing target: {candidate}")
 
-def listed_markdown_files(index_path: Path) -> set[str]:
-    text = index_path.read_text(encoding="utf-8")
-    return {match.group(1) for match in re.finditer(r"- `([^`/\\]+\.md)`", text)}
+def check_private_plan_files_not_public(errors: list[str]) -> None:
+    """Internal planning material must stay outside the publishable tree."""
+    forbidden_paths = [
+        ROOT / "PLANS.md",
+        ROOT / "docs" / "exec-plans",
+        ROOT / "docs" / "design-docs" / "agent1-v72-industrial-signoff-contract.md",
+    ]
+    for path in forbidden_paths:
+        if path.exists():
+            errors.append(f"private planning path must stay local-only: {path.relative_to(ROOT).as_posix()}")
 
-def check_plan_indexes(errors: list[str]) -> None:
-    groups = {
-        "active": ROOT / "docs" / "exec-plans" / "active",
-        "completed": ROOT / "docs" / "exec-plans" / "completed",
-        "superseded": ROOT / "docs" / "exec-plans" / "superseded",
-    }
-    for name, folder in groups.items():
-        index = folder / "index.md"
-        if not index.exists():
-            errors.append(f"missing {name} plans index: {index.relative_to(ROOT).as_posix()}")
-            continue
-        actual = {path.name for path in folder.glob("*.md") if path.name != "index.md"}
-        listed = listed_markdown_files(index)
-        missing = sorted(actual - listed)
-        stale = sorted(listed - actual)
-        if missing:
-            errors.append(f"{name} plans index missing files: {missing}")
-        if stale:
-            errors.append(f"{name} plans index stale files: {stale}")
+    for pattern in (
+        "*PLAN*.md",
+        "*Plan*.md",
+        "*plan*.md",
+        "*UPGRADE*.md",
+        "*Upgrade*.md",
+        "*upgrade*.md",
+        "*TASKS*.md",
+        "*Tasks*.md",
+        "*tasks*.md",
+    ):
+        for path in (ROOT / "docs").glob(pattern):
+            errors.append(f"private planning doc in public docs root: {path.relative_to(ROOT).as_posix()}")
 
-    active_dir = groups["active"]
-    for path in active_dir.glob("*.md"):
-        if path.name == "index.md":
-            continue
-        status = frontmatter_field(path, "status")
-        if status in {"completed", "superseded"}:
-            errors.append(f"non-active plan in active folder: {path.relative_to(ROOT).as_posix()} status={status}")
-
-    plans_text = (ROOT / "PLANS.md").read_text(encoding="utf-8")
-    for path in active_dir.glob("*.md"):
-        if path.name == "index.md":
-            continue
-        rel = path.relative_to(ROOT).as_posix()
-        if rel not in plans_text:
-            errors.append(f"PLANS.md missing active plan: {rel}")
+    for path in (ROOT / "docs" / "prompts").glob("*upgrade*.md"):
+        errors.append(f"private upgrade prompt in public prompt docs: {path.relative_to(ROOT).as_posix()}")
+    for path in (ROOT / "docs" / "prompts").glob("*Upgrade*.md"):
+        errors.append(f"private upgrade prompt in public prompt docs: {path.relative_to(ROOT).as_posix()}")
+    for base in (ROOT / "docs" / "generated", ROOT / "docs" / "governance"):
+        for path in base.glob("Kiem_tra_toan_bo_Agent_AI_*.md"):
+            errors.append(f"private audit artifact in public docs: {path.relative_to(ROOT).as_posix()}")
 
 def check_generated_index_paths(errors: list[str]) -> None:
     for rel in [
@@ -224,7 +212,7 @@ def main() -> int:
     check_frontmatter(errors)
     check_markdown_links(errors)
     check_knowledge_map_paths(errors)
-    check_plan_indexes(errors)
+    check_private_plan_files_not_public(errors)
     check_generated_index_paths(errors)
     check_known_stale_paths(errors)
     check_local_secret_files_not_tracked(errors)

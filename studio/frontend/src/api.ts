@@ -27,6 +27,10 @@ export function getCurrentState(): Promise<RunState> {
   return request<RunState>("/api/runs/current_state");
 }
 
+export function getHealth(): Promise<Record<string, unknown>> {
+  return request<Record<string, unknown>>("/api/health");
+}
+
 export function getRuntime(runId: string): Promise<RuntimeBundle> {
   return request<RuntimeBundle>(`/api/runs/${encodeURIComponent(runId)}/runtime`);
 }

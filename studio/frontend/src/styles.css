@@ -728,6 +728,35 @@ h3,
   box-shadow: 0 0 18px rgba(53, 214, 255, 0.18);
 }
 
+.blocked-panel {
+  min-width: 0;
+  border: 1px solid rgba(255, 184, 77, 0.34);
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(255, 184, 77, 0.08), rgba(255, 77, 94, 0.05));
+  padding: 10px;
+}
+
+.blocked-reason-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 7px;
+  margin-top: 8px;
+  min-width: 0;
+}
+
+.blocked-reason {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px;
+  align-items: start;
+  min-width: 0;
+  border: 1px solid rgba(255, 184, 77, 0.16);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.22);
+  padding: 7px;
+  font-size: 11px;
+}
+
 @media (max-width: 1320px) {
   .launch-panel-grid {
     grid-template-columns: minmax(330px, 1fr) minmax(320px, 0.9fr) 164px;
@@ -770,6 +799,9 @@ h3,
   .glass { @apply bg-deep/80 backdrop-blur-xl; }
   .panel { @apply rounded-lg border border-cyanGlow/20 bg-orbital/80 shadow-glow backdrop-blur-xl; }
   .input { @apply w-full rounded border border-cyanGlow/25 bg-black/40 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyanGlow; }
+  .field { @apply rounded border border-cyanGlow/25 bg-black/50 text-slate-100 outline-none transition focus:border-cyanGlow focus:shadow-glow; }
+  .field.compact { @apply min-w-0 max-w-full px-2 py-1 text-xs; }
+  select.field option, select.input option { @apply bg-[#07111f] text-slate-100; }
   .btn-primary { @apply inline-flex items-center justify-center gap-2 rounded-lg border border-cyanGlow/40 bg-cyanGlow px-4 py-2 font-bold text-cosmic shadow-glow transition hover:bg-white disabled:opacity-50; }
   .btn-secondary { @apply inline-flex items-center justify-center gap-2 rounded-lg border border-cyanGlow/25 bg-surface px-3 py-2 text-sm text-slate-100 transition hover:border-cyanGlow; }
   .btn-danger { @apply inline-flex items-center justify-center gap-2 rounded-lg border border-danger/40 bg-danger/85 px-4 py-2 font-bold text-white shadow-danger transition hover:bg-danger; }

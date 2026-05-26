@@ -6,7 +6,6 @@ purpose: Machine-checkable routing map for AI agents.
 top_level_maps:
   - AGENTS.md
   - ARCHITECTURE.md
-  - PLANS.md
 
 source_of_truth_docs:
   design:
@@ -27,18 +26,6 @@ source_of_truth_docs:
     - docs/governance/stale-docs-policy.md
     - docs/governance/harness-engineering-compliance-audit.md
     - docs/governance/openai-harness-full-compliance-matrix.md
-  exec_plans:
-    - docs/exec-plans/active/harness-engineering-knowledge-store.md
-    - docs/exec-plans/active/Kiem_tra_toan_bo_Agent_AI.md
-    - docs/exec-plans/active/AGENT_2_V4_INDUSTRIAL_RTL_SIGNOFF_PLAN.md
-    - docs/exec-plans/active/SWARM_WIDE_CONTRACT_ISOLATION_AND_AGENT6_READY_PLAN.md
-    - docs/exec-plans/active/AGENT_3_DV_PRACTICAL_UPGRADE_PLAN.md
-    - docs/exec-plans/completed/harness-engineering-100-percent-plan.md
-    - docs/exec-plans/completed/openai-harness-full-compliance-plan.md
-    - docs/exec-plans/superseded/index.md
-    - docs/exec-plans/superseded/AGENT_2_Upgrade_V1.md
-    - docs/exec-plans/superseded/AGENT_2_V2_SWARM_OF_EXPERTS_PLAN.md
-    - docs/exec-plans/superseded/AGENT_2_V3_SEMANTIC_RTL_CLOSURE_PLAN.md
   prompts:
     - docs/prompts/index.md
     - docs/prompts/canonical-prompts.md
@@ -57,7 +44,6 @@ task_routes:
     read:
       - AGENTS.md
       - ARCHITECTURE.md
-      - PLANS.md
       - docs/design-docs/repo-knowledge-store.md
   docs_change:
     read:
@@ -65,8 +51,6 @@ task_routes:
       - docs/governance/docs-style-guide.md
       - docs/governance/source-of-truth-policy.md
       - docs/governance/docs-review-process.md
-      - docs/exec-plans/active/harness-engineering-knowledge-store.md
-      - docs/exec-plans/tech-debt-tracker.md
   prompt_change:
     read:
       - docs/prompts/index.md
@@ -82,12 +66,10 @@ task_routes:
   agent2_rtl:
     read:
       - docs/product-specs/agent2-rtl-designer.md
-      - docs/exec-plans/active/AGENT_2_V4_INDUSTRIAL_RTL_SIGNOFF_PLAN.md
       - tests/test_agent2.py
   agent3_dv:
     read:
       - docs/product-specs/agent3-dv-engineer.md
-      - docs/exec-plans/active/AGENT_3_DV_PRACTICAL_UPGRADE_PLAN.md
       - tests/test_agent3.py
       - tests/test_agent3_manifest.py
       - tests/test_agent3_scoreboard.py
@@ -108,23 +90,8 @@ task_routes:
       - docs/product-specs/semiconductor-swarm.md
       - semiconductor_swarm/swarm_graph.py
       - tests/test_swarm_graph.py
-  full_agent_ai_audit:
-    read:
-      - docs/exec-plans/active/Kiem_tra_toan_bo_Agent_AI.md
-      - docs/semiconductor_swarm_ai.md
-      - AGENTS.md
-      - ARCHITECTURE.md
-      - PLANS.md
-      - docs/knowledge-map.yaml
-      - docs/prompts/index.md
-      - docs/prompt_compliance_matrix.yaml
-      - tests/test_prompt_contracts.py
-      - tests/test_agent_pipeline.py
-      - tests/test_swarm_graph.py
-
 canonical_prompts:
   semiconductor_swarm_master: docs/semiconductor_swarm_ai.md
-  agent1_systemrdl_fw_upgrade: docs/prompts/v3.5_agent1_systemrdl_fw_upgrade.md
   prompt_compliance_matrix: docs/prompt_compliance_matrix.yaml
 
 generated_indexes:

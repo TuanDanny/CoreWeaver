@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import time
 import urllib.error
 import urllib.request
@@ -29,6 +30,8 @@ def call_agent1_codex(prompt: str, *, config: dict[str, Any] | None = None) -> A
         "messages": [{"role": "user", "content": prompt}],
         "temperature": cfg["temperature"],
     }
+    if cfg.get("max_tokens") is not None:
+        payload["max_tokens"] = int(cfg["max_tokens"])
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         f"{base_url}/chat/completions",
@@ -71,6 +74,21 @@ def call_agent1_codex(prompt: str, *, config: dict[str, Any] | None = None) -> A
             return Agent1CodexResult(content=content, evidence=evidence)
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError) as exc:
             last_error = str(exc)
+            if retry < int(cfg.get("max_retries", 0)):
+                delay_s = min(2.0, 0.2 * (2**retry)) + random.uniform(0.0, 0.05)
+                emit_runtime_event(
+                    {
+                        "type": "agent_action",
+                        "agent": "agent1",
+                        "label": "Agent 1 Architect",
+                        "phase": "planning",
+                        "action": "Codex retry backoff",
+                        "status": "warning",
+                        "summary": f"Retrying {cfg['model']} after {round(delay_s, 2)}s because {exc.__class__.__name__}: {last_error}",
+                        "metric": {"retry": retry + 1, "delay_s": round(delay_s, 3)},
+                    }
+                )
+                time.sleep(delay_s)
     emit_runtime_event(
         {
             "type": "agent_action",

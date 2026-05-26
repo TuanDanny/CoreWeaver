@@ -22,6 +22,7 @@ Convert user requirements into stable architecture/spec artifacts that downstrea
 - Produce deterministic PPA and bandwidth estimates using tools.
 - Lock downstream contracts for RTL/DV/formal/physical stages.
 - Emit debug and self-check reports when supported.
+- For V7.2 and later, produce or block on an industrial signoff certificate before Agent2 handoff.
 
 ## Inputs
 - User requirements.
@@ -37,6 +38,8 @@ Convert user requirements into stable architecture/spec artifacts that downstrea
 - Address map/register plan when applicable.
 - PPA/bandwidth estimates with provenance.
 - Debug report and self-check report when applicable.
+- V7.2 signoff artifacts when enabled: finding records, waiver records, benchmark case/result records, and `agent1_final_signoff_certificate.json`.
+- V7.2 signoff evidence/gate report when enabled: current artifact hashes, trace issue refs, gate results for `G00-G12`, and deterministic finding list.
 
 ## Contract Fields
 - Project name and target profile.
@@ -54,6 +57,7 @@ Convert user requirements into stable architecture/spec artifacts that downstrea
 - Unsupported downstream capability must become explicit bridge strategy or HITL/capability gap.
 - Generated plans must pass raw-requirement/extraction/spec/markdown consistency checks.
 - Keep behavior aligned with `tests/test_agent1.py`.
+- Agent2 release must be gated by the Agent1 signoff certificate when signoff is enabled.
 
 ## Failure Modes
 - Ambiguous requirements.
@@ -61,6 +65,9 @@ Convert user requirements into stable architecture/spec artifacts that downstrea
 - Contract drift with downstream agents.
 - Overspecified architecture that blocks RTL generation.
 - Address/register collision.
+- Failed, stale, waived-by-accident, or benchmark-unproven Agent1 output reaching Agent2.
 
 ## Test Coverage
 - `tests/test_agent1.py`
+- `tests/test_agent1_v72_signoff_models.py`
+- `tests/test_agent1_v72_signoff_engine.py`

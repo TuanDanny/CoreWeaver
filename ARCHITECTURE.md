@@ -20,7 +20,7 @@ Map system structure for agents and humans. Keep details in linked docs.
 
 ## Pipeline
 ```text
-Requirements -> Agent1 Architect -> Agent2 RTL -> Agent5 Formal -> Agent3 DV -> Agent4 Physical -> Reports/HITL
+Requirements -> Agent1 Architect -> Agent1 Signoff Gate -> Agent2 RTL -> Agent5 Formal -> Agent3 DV -> Agent4 Physical -> Reports/HITL
 ```
 
 ## Core Components
@@ -54,6 +54,7 @@ React Studio / CLI
 
 ## Artifact Flow
 - Agent1 emits architecture/spec outputs.
+- Agent1 V7.2 signoff emits release certificate and benchmark/schema evidence when enabled.
 - Agent2 emits RTL packages, interfaces, and modules.
 - Agent5 emits SVA/SBY formal collateral.
 - Agent3 emits DV/testbench collateral.
@@ -68,4 +69,4 @@ HITL is required when repeated debug/validation failures persist or when tool av
 ## Deeper Docs
 - Knowledge store design: `docs/design-docs/repo-knowledge-store.md`
 - Product specs: `docs/product-specs/index.md`
-- Active plans: `PLANS.md`
+- Private implementation plans stay in `_private/plans/` on local machines and are not committed.

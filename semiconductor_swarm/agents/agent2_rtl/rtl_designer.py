@@ -350,6 +350,7 @@ def _access(meta: dict[str, Any], reg_name: str) -> str:
 
 def _register_bank_rtl(project: str, block: str, registers: dict[str, dict[str, Any]]) -> str:
     reg_items = [(name, meta) for name, meta in registers.items()]
+    has_lock = any(_sv_name(name) == "lock" for name, _meta in reg_items)
     declarations = []
     reset_lines = []
     defaults = []
@@ -367,7 +368,7 @@ def _register_bank_rtl(project: str, block: str, registers: dict[str, dict[str, 
         if access == "w1c":
             write_cases.append(f"            8'h{offset:02X}: {sv}_d = {sv}_q & ~pwdata_i;")
         elif access != "ro":
-            write_cases.append(f"            8'h{offset:02X}: {sv}_d = pwdata_i;")
+            write_cases.append(_write_case_assignment(offset, sv, meta, has_lock))
         if access == "wo":
             read_cases.append(f"            8'h{offset:02X}: prdata_d = RESET_VALUE;")
         else:
@@ -479,6 +480,14 @@ module {project}_{block}_rtl #(
 endmodule
 """
 
+
+def _write_case_assignment(offset: int, sv: str, meta: dict[str, Any], has_lock: bool) -> str:
+    write_policy = str(meta.get("write_policy") or "").lower()
+    if write_policy in {"set_only", "w1s"} or sv == "lock":
+        return f"            8'h{offset:02X}: {sv}_d = {sv}_q | pwdata_i;"
+    if has_lock and bool(meta.get("lock_protected")):
+        return f"            8'h{offset:02X}: {sv}_d = lock_q[0] ? {sv}_q : pwdata_i;"
+    return f"            8'h{offset:02X}: {sv}_d = pwdata_i;"
 
 def _top(project: str, blocks: list[str], data_width: int = 32) -> str:
     declarations = ["  logic [31:0] irq_sources; // One interrupt bit per IP block"]

@@ -2,6 +2,7 @@ import unittest
 import importlib.util
 import json
 import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -136,8 +137,16 @@ class TestLangGraphSwarm(unittest.TestCase):
             self.assertIn("__interrupt__", paused2)
             payload2 = paused2["__interrupt__"][0].value
             self.assertEqual(payload2["action_required"], "HUMAN_REVIEW")
+            self.assertTrue((Path(tmp) / "reports" / "agent1" / "agent1_final_signoff_certificate.json").is_file())
+            self.assertTrue((Path(tmp) / "reports" / "agent1" / "agent1_to_agent2_signoff_handoff.json").is_file())
             self.assertTrue(payload2["rtl_files"])
             self.assertTrue(payload2["formal_files"])
+            self.assertTrue(payload2["rtl_artifact_paths"])
+            self.assertTrue(payload2["formal_artifact_paths"])
+            self.assertTrue((Path(tmp) / "rtl").is_dir())
+            self.assertTrue((Path(tmp) / "formal").is_dir())
+            for artifact_path in payload2["rtl_artifact_paths"] + payload2["formal_artifact_paths"]:
+                self.assertTrue(Path(artifact_path).is_file(), artifact_path)
 
             done = app.invoke(Command(resume={"approved": True, "reviewer": "unit-test", "notes": "ok"}), config=config)
             self.assertEqual(done["status"], "SIGNOFF_READY")
@@ -187,6 +196,46 @@ class TestLangGraphSwarm(unittest.TestCase):
             self.assertIn("Incremental update: thêm I2C slave 400kHz", state["requirement"])
             self.assertFalse(state.get("plan_approved", False))
 
+    def test_plan_review_change_conflict_interrupts_instead_of_keyerror(self):
+        app = build_swarm_graph()
+        config = {"configurable": {"thread_id": "test-plan-conflict"}}
+        conflict_result = {
+            "status": "HITL_REQUIRED",
+            "effective_requirement": "AXI4-Lite request conflicts with downstream APB support",
+            "iterations": [{"critical_conflicts": 1}],
+            "artifacts": {"agent1_conflict_matrix.json": json.dumps({"conflicts": ["AXI4-Lite unsupported"]})},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            app.invoke({"requirement": "SPI controller 50MHz", "project_name": "spi_ctrl", "output_dir": tmp, "reports": {}}, config=config)
+            with patch("semiconductor_swarm.agents.agent1_planning.agent1_subgraph.run_agent1_v51_council", return_value=conflict_result):
+                paused = app.invoke(Command(resume={"response": "change expose native AXI4-Lite despite unsupported downstream"}), config=config)
+
+            self.assertIn("__interrupt__", paused)
+            payload = paused["__interrupt__"][0].value
+            self.assertEqual(payload["action_required"], "CONFLICT_REQUIRED")
+            self.assertIn("resolve Agent 1 council conflicts", payload["missing_fields"])
+            self.assertTrue((Path(tmp) / "reports" / "agent1_requirement_clarification.md").is_file())
+
+    def test_agent1_infra_hard_stop_interrupts_as_hitl_required(self):
+        app = build_swarm_graph()
+        config = {"configurable": {"thread_id": "test-infra-hitl"}}
+        hard_stop_result = {
+            "status": "HITL_REQUIRED",
+            "hitl_reason": "agent1_council_infra_hard_stop",
+            "effective_requirement": "RV32IMC SoC with secure boot",
+            "iterations": [{"critical_conflicts": 3}],
+            "artifacts": {"agent1_group_session_trace.jsonl": ""},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("semiconductor_swarm.agents.agent1_planning.agent1_subgraph.run_agent1_v51_council", return_value=hard_stop_result):
+                paused = app.invoke({"requirement": "RV32IMC SoC with secure boot", "project_name": "rv32_soc", "output_dir": tmp, "reports": {}, "planning_mode": "deep_planning"}, config=config)
+
+            self.assertIn("__interrupt__", paused)
+            payload = paused["__interrupt__"][0].value
+            self.assertEqual(payload["action_required"], "HITL_REQUIRED")
+            self.assertTrue(any("model/API reliability" in item for item in payload["missing_fields"]))
+            self.assertIn("infrastructure hard-stop", payload["message"])
+
     def test_agent1_interrupts_for_ambiguous_ai_chip_requirement(self):
         app = build_swarm_graph()
         config = {"configurable": {"thread_id": "test-ambiguous"}}
@@ -207,7 +256,7 @@ class TestLangGraphSwarm(unittest.TestCase):
             paused = app.invoke({"requirement": "hi", "project_name": "cpu32bit_web", "output_dir": tmp, "reports": {}}, config=config)
             self.assertIn("__interrupt__", paused)
             payload = paused["__interrupt__"][0].value
-            self.assertEqual(payload["action_required"], "REQUIREMENT_CLARIFICATION")
+            self.assertEqual(payload["action_required"], "NON_DESIGN_CONVERSATION")
             self.assertFalse((__import__("pathlib").Path(tmp) / "reports" / "architecture_plan.md").exists())
 
     def test_write_outputs_creates_full_ip_package_reports_and_manifest(self):

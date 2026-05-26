@@ -30,7 +30,7 @@ Use this map when preparing commits or reviewing pull requests.
 | Area | Path | Rule |
 |---|---|---|
 | Legacy desktop cockpit | `app/` | keep working, but new UX belongs in `studio/` |
-| Historical plans | `docs/exec-plans/archive/` and `docs/exec-plans/superseded/` | do not edit except for archive hygiene |
+| Private plans | `_private/plans/` | local-only implementation plans and idea docs; never commit |
 | Generated docs indexes | `docs/generated/` | update only with docs/governance intent |
 | Debug helpers | `debug_runners/`, `scripts/` | keep separate from core runtime changes |
 
@@ -48,6 +48,10 @@ These must not be committed:
 - `*.sqlite`
 - `studio/frontend/node_modules/`
 - `studio/frontend/dist/`
+- `_private/`
+- `PLANS.md`
+- `docs/exec-plans/`
+- plan, upgrade, and task docs that expose internal roadmap detail
 
 ## Suggested Commit Slices
 
@@ -56,4 +60,4 @@ These must not be committed:
 3. Studio backend changes: `studio/backend/` plus `tests/test_studio_backend.py`.
 4. Studio job service changes: `studio/backend/agent_service.py`, `studio/backend/job_*.py`, `tests/test_studio_jobs.py`.
 5. Studio frontend changes: `studio/frontend/src/` plus `studio/frontend/scripts/smoke.mjs`.
-6. Docs-only changes: `docs/`, `README.md`, `ARCHITECTURE.md`, `PLANS.md`.
+6. Docs-only changes: public `docs/`, `README.md`, `ARCHITECTURE.md`.

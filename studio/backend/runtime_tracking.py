@@ -17,10 +17,12 @@ RUNTIME_SCHEMA_VERSION = "studio.runtime_event.v1"
 MANIFEST_SCHEMA_VERSION = "studio.runtime_session_manifest.v1"
 TRACE_DIR = Path("reports") / "traces"
 EVENTS_NAME = "runtime_events.jsonl"
+DEBUG_ISSUES_NAME = "debug_issues.jsonl"
 MANIFEST_NAME = "runtime_session_manifest.json"
 RECOVERY_NAME = "runtime_recovery_report.json"
 INVARIANT_NAME = "runtime_invariant_report.json"
 REPLAY_NAME = "runtime_replay_report.json"
+FLOW_COVERAGE_NAME = "runtime_flow_coverage_report.json"
 DEBUG_SUMMARY_NAME = "runtime_debug_summary.json"
 RUNTIME_INDEX_NAME = "runtime_index.json"
 
@@ -28,7 +30,86 @@ AGENTS = {"system", "agent1", "agent2", "agent3", "agent4", "agent5", "agent6", 
 PHASES = {"planning", "rtl", "formal", "hitl", "dv", "physical", "signoff", "studio", "backend", "runner"}
 TERMINAL_EVENT_TYPES = {"job_done", "runtime_error", "watchdog_timeout", "runtime_recovered"}
 PROGRESS_EVENT_TYPES = {"node_start", "node_done", "model_call_done", "artifact_written", "job_started", "job_done"}
-STRICT_PAIR_KINDS = {"tool_call", "model_call"}
+STRICT_PAIR_KINDS = {"tool_call"}
+WARNING_PAIR_KINDS = {"agent", "model_call"}
+AGENT1_CLUSTER_EVENT_TYPES = {
+    "agent1_topology_loaded",
+    "agent1_cluster_assignment",
+    "agent1_group_session_start",
+    "agent1_group_session_done",
+    "agent1_group_session_failed",
+    "agent1_group_retry",
+    "agent1_leaf_expert_start",
+    "agent1_leaf_expert_done",
+    "agent1_leaf_expert_failed",
+    "agent1_leaf_expert_retry",
+    "agent1_cross_group_challenge",
+    "agent1_principal_group_review",
+    "agent1_clarification_question",
+    "agent1_clarification_answer",
+    "agent1_council_mode_selected",
+}
+AGENT1_GROUP_SESSION_TERMINALS = {"agent1_group_session_done", "agent1_group_session_failed"}
+RUNTIME_SOURCE_FIELDS = {
+    "type",
+    "run_id",
+    "revision_id",
+    "iteration",
+    "span_id",
+    "parent_span_id",
+    "group_id",
+    "target_group_id",
+    "target_group_ids",
+    "owner_group_id",
+    "manager_id",
+    "expert_id",
+    "leaf_expert_ids",
+    "guest_expert_ids",
+    "group_count",
+    "attachment_ids",
+    "run_span_id",
+    "ui_action_span_id",
+    "backend_request_span_id",
+    "job_span_id",
+    "process_span_id",
+    "agent_span_id",
+    "artifact_span_id",
+    "event_id",
+    "last_event_id",
+    "replay_event_id",
+    "model_call_id",
+    "attempt",
+    "retry_count",
+    "backoff_s",
+    "error_class",
+    "latency_s",
+    "latency_ms",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "estimated_cost_usd",
+    "confidence",
+    "mode",
+    "topology_hash",
+    "cluster_assignment_hash",
+    "challenge_id",
+    "question_id",
+    "answer_id",
+    "code",
+    "severity",
+    "artifact_ref",
+    "flow_segment",
+    "source_layer",
+    "options",
+    "status",
+    "resolution",
+    "from_agent",
+    "to_agent",
+    "contract",
+    "action_required",
+    "prompt_sha256",
+    "response_sha256",
+}
 SECRET_PATTERNS = (
     re.compile(r"Bearer\s+[A-Za-z0-9._\-]+", re.IGNORECASE),
     re.compile(r"Authorization\s*[:=]\s*[A-Za-z0-9._\- ]+", re.IGNORECASE),
@@ -63,6 +144,14 @@ def runtime_index_file(root: Path = ROOT) -> Path:
 def redact_runtime_payload(value: Any) -> Any:
     clean = _redact_sensitive_keys(value)
     return _redact_secret_patterns(clean)
+
+def _runtime_source(source: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(source, dict):
+        return None
+    compact = {key: source.get(key) for key in RUNTIME_SOURCE_FIELDS if key in source}
+    if "type" not in compact:
+        compact["type"] = source.get("type") or "source_event"
+    return redact_runtime_payload(compact)
 
 
 def _redact_sensitive_keys(value: Any) -> Any:
@@ -124,24 +213,99 @@ def read_runtime_events(output_dir: str | Path, *, limit: int | None = None) -> 
     return events[-limit:] if limit else events
 
 
+def read_debug_issues(output_dir: str | Path, *, limit: int | None = None) -> list[dict[str, Any]]:
+    path = runtime_file(output_dir, DEBUG_ISSUES_NAME)
+    if not path.is_file():
+        return []
+    issues: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            item = {"type": "debug_issue", "severity": "warning", "source": "runtime", "code": "invalid_debug_issue_jsonl", "message": line[:200]}
+        if isinstance(item, dict):
+            issues.append(redact_runtime_payload(item))
+    return issues[-limit:] if limit else issues
+
+
 def load_runtime_bundle(output_dir: str | Path, *, recent_limit: int = 400) -> dict[str, Any]:
     trace_dir = runtime_trace_dir(output_dir)
     manifest = _safe_read_json(trace_dir / MANIFEST_NAME)
+    signoff = load_agent1_signoff_bundle(output_dir)
     return {
         "manifest": manifest.get("payload"),
         "recentEvents": read_runtime_events(output_dir, limit=recent_limit),
+        "debugIssues": read_debug_issues(output_dir, limit=recent_limit),
+        "signoff": signoff,
         "recoveryReport": _safe_read_json(trace_dir / RECOVERY_NAME).get("payload"),
         "invariantReport": _safe_read_json(trace_dir / INVARIANT_NAME).get("payload"),
         "replayReport": _safe_read_json(trace_dir / REPLAY_NAME).get("payload"),
+        "flowCoverage": _safe_read_json(trace_dir / FLOW_COVERAGE_NAME).get("payload"),
         "debugSummary": _safe_read_json(trace_dir / DEBUG_SUMMARY_NAME).get("payload"),
         "errors": [item for item in (
             manifest.get("error"),
             _safe_read_json(trace_dir / RECOVERY_NAME).get("error"),
             _safe_read_json(trace_dir / INVARIANT_NAME).get("error"),
             _safe_read_json(trace_dir / REPLAY_NAME).get("error"),
+            _safe_read_json(trace_dir / FLOW_COVERAGE_NAME).get("error"),
             _safe_read_json(trace_dir / DEBUG_SUMMARY_NAME).get("error"),
+            *(signoff.get("errors") or []),
         ) if item],
     }
+
+def load_agent1_signoff_bundle(output_dir: str | Path) -> dict[str, Any]:
+    agent1_dir = Path(output_dir) / "reports" / "agent1"
+    files = {
+        "certificate": "agent1_final_signoff_certificate.json",
+        "gateReport": "agent1_signoff_gate_report.json",
+        "evidenceManifest": "agent1_signoff_evidence_manifest.json",
+        "runtimeManifest": "agent1_signoff_runtime_manifest.json",
+        "handoff": "agent1_to_agent2_signoff_handoff.json",
+        "benchmarkReport": "agent1_signoff_benchmark_report.json",
+        "falsePassReport": "agent1_signoff_false_pass_report.json",
+        "oracleDisagreements": "agent1_signoff_oracle_disagreements.json",
+        "benchmarkManifestHash": "agent1_signoff_benchmark_manifest_hash.json",
+        "waivers": "signoff_waivers.json",
+    }
+    bundle: dict[str, Any] = {
+        "schema_version": "studio.agent1_signoff_bundle.v1",
+        "state": "NOT_REACHED",
+        "stateReason": "Agent1 signoff artifacts have not been generated yet.",
+        "artifactRefs": {},
+        "artifactStatus": {},
+        "errors": [],
+    }
+    for key, filename in files.items():
+        path = agent1_dir / filename
+        bundle["artifactRefs"][key] = str(path)
+        bundle["artifactStatus"][key] = {"path": str(path), "exists": path.is_file()}
+        parsed = _safe_read_json(path)
+        bundle[key] = parsed.get("payload")
+        if parsed.get("error"):
+            bundle["errors"].append({key: parsed["error"]})
+    partial = agent1_dir / "agent1_partial_evidence.json"
+    if partial.is_file() and not bundle.get("certificate"):
+        bundle["state"] = "PARTIAL"
+        bundle["stateReason"] = "Agent1 stopped with partial output before signoff."
+    elif bundle.get("certificate"):
+        cert = bundle.get("certificate") if isinstance(bundle.get("certificate"), dict) else {}
+        decision = str(cert.get("decision") or "").upper()
+        handoff_allowed = cert.get("handoff_allowed")
+        if decision == "PASS" and handoff_allowed is True:
+            bundle["state"] = "PASSED"
+            bundle["stateReason"] = "Agent1 final signoff certificate passed."
+        elif handoff_allowed is False:
+            bundle["state"] = "BLOCKED"
+            bundle["stateReason"] = "Agent1 final signoff exists but blocks Agent2 handoff."
+        else:
+            bundle["state"] = "FAILED" if decision in {"FAIL", "FAILED"} else "BLOCKED"
+            bundle["stateReason"] = f"Agent1 signoff decision is {decision or 'unknown'}."
+    elif bundle.get("gateReport") or bundle.get("handoff"):
+        bundle["state"] = "BLOCKED"
+        bundle["stateReason"] = "Signoff started but final certificate is missing."
+    return redact_runtime_payload(bundle)
 
 
 def _safe_read_json(path: Path) -> dict[str, Any]:
@@ -270,10 +434,10 @@ class RuntimeTracker:
 
     def __init__(self, *, root: Path = ROOT) -> None:
         self.root = root
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._active_agent_corr: dict[str, str] = {}
         self._active_node_corr: dict[tuple[str, str], str] = {}
-        self._active_model_corr: dict[str, str] = {}
+        self._active_model_corr: dict[str, list[str]] = {}
         self._node_ordinals: dict[tuple[str, str], int] = {}
         self._model_ordinals: dict[tuple[str, str], int] = {}
         self._tool_ordinals: dict[tuple[str, str, str], int] = {}
@@ -325,7 +489,10 @@ class RuntimeTracker:
         if not state.get("output_dir") or not state.get("run_id"):
             return []
         events = self._events_from_source(event, state)
-        events = [item for item in events if self._keep_once(item)]
+        if str(event.get("type") or "") == "debug_issue":
+            self._write_debug_issues(state, [event])
+        else:
+            events = [item for item in events if self._keep_once(item)]
         if events:
             self._write_events(state, events)
         return events
@@ -409,6 +576,55 @@ class RuntimeTracker:
             return []
         if kind in {"log", "ping", "attachment_staged", "attachment_rejected"}:
             return []
+        if kind == "start_preflight":
+            status = _status(str(event.get("status") or "pass"))
+            return [
+                self._build_event(
+                    state=state,
+                    event_type="node_done",
+                    status="failed" if status == "failed" else "passed",
+                    message=str(event.get("message") or "start credential preflight"),
+                    agent="system",
+                    phase="backend",
+                    node_id="START.PREFLIGHT",
+                    correlation_id=f"preflight:{state.get('run_id') or ''}",
+                    error={"message": event.get("message") or "start credential preflight failed"} if status == "failed" else None,
+                    source={**event, "flow_segment": "credential_preflight", "source_layer": "backend"},
+                )
+            ]
+        if kind in {"websocket_connect", "websocket_replay", "websocket_hydrate"}:
+            return [
+                self._build_event(
+                    state=state,
+                    event_type="node_done",
+                    status=_status(str(event.get("status") or "pass")),
+                    message=str(event.get("message") or kind),
+                    agent="studio",
+                    phase="studio",
+                    node_id=f"WEBSOCKET.{_slug(kind).upper()}",
+                    correlation_id=f"websocket:{state.get('run_id') or ''}",
+                    source={**event, "flow_segment": "websocket", "source_layer": "frontend"},
+                )
+            ]
+        if kind in AGENT1_CLUSTER_EVENT_TYPES:
+            return [self._agent1_cluster_event(event, state)]
+        if kind == "debug_issue":
+            severity = str(event.get("severity") or "warning").lower()
+            return [
+                self._build_event(
+                    state=state,
+                    event_type="debug_issue",
+                    status="failed" if severity in {"error", "fatal"} else "running",
+                    message=str(event.get("message") or event.get("code") or "debug issue"),
+                    agent=str(event.get("agent") or "system"),
+                    phase=str(event.get("phase") or "studio"),
+                    node_id=str(event.get("node_id") or f"DEBUG.{_slug(str(event.get('code') or 'issue')).upper()}"),
+                    correlation_id=f"issue:{state.get('run_id') or ''}:{uuid.uuid4()}",
+                    artifact_refs=[str(event.get("artifact_ref"))] if event.get("artifact_ref") else [],
+                    error={"severity": severity, "code": event.get("code"), "details": event.get("details")} if severity in {"warning", "error", "fatal"} else None,
+                    source={"type": "debug_issue"},
+                )
+            ]
         if kind.startswith("job_"):
             return [self._job_event(event, state)]
         if kind == "process_start":
@@ -605,7 +821,7 @@ class RuntimeTracker:
             event_type = str(event.get("event_type") or "trace_event")
             status_value = _status(str(event.get("status") or "info"))
             node_id = str(event.get("node_id") or "TRACE.EVENT")
-            runtime_type = "node_start" if status_value == "running" else "node_done" if status_value in {"passed", "failed", "paused", "cancelled"} else "trace_event"
+            runtime_type = _trace_runtime_type(event_type, status_value)
             return [
                 self._build_event(
                     state=state,
@@ -647,6 +863,30 @@ class RuntimeTracker:
                 )
             ]
         return []
+
+    def _agent1_cluster_event(self, event: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+        kind = str(event.get("type") or "agent1_cluster_event")
+        group_id = str(event.get("group_id") or event.get("target_group_id") or event.get("owner_group_id") or "")
+        iteration = str(event.get("iteration") or "1")
+        span_id = str(event.get("span_id") or event.get("model_call_id") or f"{kind}:{iteration}:{group_id or 'global'}")
+        status = _agent1_cluster_status(kind, event)
+        node_id = _agent1_cluster_node_id(kind, group_id)
+        source = dict(event)
+        source["type"] = kind
+        return self._build_event(
+            state=state,
+            event_type=kind,
+            status=status,
+            message=str(event.get("message") or event.get("summary") or kind),
+            agent="agent1",
+            phase="planning",
+            node_id=node_id,
+            correlation_id=f"agent1-cluster:{state.get('run_id') or ''}:{span_id}",
+            duration_ms=_cluster_duration_ms(event),
+            metrics=_cluster_metrics(event),
+            error={"message": event.get("message") or kind, "code": kind} if status == "failed" else None,
+            source=source,
+        )
 
     def _keep_once(self, event: dict[str, Any]) -> bool:
         fingerprint = (
@@ -747,7 +987,7 @@ class RuntimeTracker:
                 )
             )
             return events
-        node_id = str(event.get("node_id") or f"{agent.upper()}.{_slug(action).upper()}")
+        node_id = str(event.get("node_id") or _agent_action_node_id(agent, action))
         event_type = "node_start" if status_value == "running" else "node_done"
         corr = self._node_correlation(state, agent, node_id, start=event_type == "node_start")
         events.append(
@@ -817,7 +1057,7 @@ class RuntimeTracker:
             "artifact_refs": list(dict.fromkeys(artifact_refs or [])),
             "metrics": metrics or {},
             "error": error,
-            "source": {"type": source.get("type")} if isinstance(source, dict) else None,
+            "source": _runtime_source(source),
         }
         return redact_runtime_payload(payload)
 
@@ -832,14 +1072,18 @@ class RuntimeTracker:
         return self._active_node_corr.pop(key)
 
     def _model_correlation(self, state: dict[str, Any], agent: str, action: str, *, start: bool) -> str:
-        if start or agent not in self._active_model_corr:
+        active = self._active_model_corr.setdefault(agent, [])
+        if start or not active:
             key = (agent, action if action else "model_call")
             self._model_ordinals[key] = self._model_ordinals.get(key, 0) + 1
             corr = f"model:{state.get('run_id') or ''}:{agent}:{_slug(action or 'model_call')}:{self._model_ordinals[key]}"
             if start:
-                self._active_model_corr[agent] = corr
+                active.append(corr)
             return corr
-        return self._active_model_corr.pop(agent)
+        corr = active.pop(0)
+        if not active:
+            self._active_model_corr.pop(agent, None)
+        return corr
 
     def _tool_correlation(self, state: dict[str, Any], agent: str, node_id: str, tool_name: str) -> str:
         key = (agent, node_id, tool_name)
@@ -862,12 +1106,53 @@ class RuntimeTracker:
             _write_json_atomic(trace_dir / MANIFEST_NAME, manifest)
             invariant = build_runtime_invariant_report(output_dir, manifest=manifest, events=all_events)
             replay = build_runtime_replay_report(output_dir, manifest=manifest, events=all_events)
-            debug = build_runtime_debug_summary(output_dir, manifest=manifest, invariant=invariant, replay=replay, events=all_events)
+            flow = build_runtime_flow_coverage_report(output_dir, manifest=manifest, events=all_events)
+            debug = build_runtime_debug_summary(output_dir, manifest=manifest, invariant=invariant, replay=replay, flow=flow, events=all_events)
             _write_json_atomic(trace_dir / INVARIANT_NAME, invariant)
             _write_json_atomic(trace_dir / REPLAY_NAME, replay)
+            _write_json_atomic(trace_dir / FLOW_COVERAGE_NAME, flow)
             _write_json_atomic(trace_dir / DEBUG_SUMMARY_NAME, debug)
+            self._write_invariant_debug_issues(state, invariant)
             _ensure_default_recovery_report(output_dir, state, manifest)
             _write_runtime_index(self.root, manifest)
+
+    def _write_debug_issues(self, state: dict[str, Any], issues: list[dict[str, Any]]) -> None:
+        output_dir = str(state.get("output_dir") or "")
+        if not output_dir or not issues:
+            return
+        with self._lock:
+            trace_dir = runtime_trace_dir(output_dir)
+            trace_dir.mkdir(parents=True, exist_ok=True)
+            path = trace_dir / DEBUG_ISSUES_NAME
+            with path.open("a", encoding="utf-8") as handle:
+                for issue in issues:
+                    clean = {
+                        "type": "debug_issue",
+                        "schema_version": str(issue.get("schema_version") or "swarm.debug_issue.v1"),
+                        "severity": str(issue.get("severity") or "warning"),
+                        "source": str(issue.get("source") or "backend"),
+                        "code": str(issue.get("code") or "debug_issue"),
+                        "message": str(issue.get("message") or issue.get("code") or "debug issue"),
+                        "details": issue.get("details") or {},
+                        "run_id": str(issue.get("run_id") or state.get("run_id") or ""),
+                        "revision_id": str(issue.get("revision_id") or ""),
+                        "artifact_ref": str(issue.get("artifact_ref") or ""),
+                        "node_id": str(issue.get("node_id") or ""),
+                        "timestamp": str(issue.get("timestamp") or utc_now_iso()),
+                    }
+                    for key in ("flow_segment", "source_layer", "span_id", "parent_span_id", "group_id", "model_call_id"):
+                        if issue.get(key) is not None:
+                            clean[key] = str(issue.get(key) or "")
+                    handle.write(json.dumps(redact_runtime_payload(clean), ensure_ascii=False, sort_keys=True) + "\n")
+
+    def _write_invariant_debug_issues(self, state: dict[str, Any], invariant: dict[str, Any]) -> None:
+        output_dir = str(state.get("output_dir") or "")
+        if not output_dir:
+            return
+        issues = _debug_issues_from_invariant(state, output_dir, invariant)
+        if not issues:
+            return
+        self._write_debug_issues(state, issues)
 
 
 def _ensure_default_recovery_report(output_dir: str | Path, state: dict[str, Any], manifest: dict[str, Any]) -> None:
@@ -907,6 +1192,8 @@ def _manifest_from_events(state: dict[str, Any], events: list[dict[str, Any]]) -
     active_node_id = ""
     active_model_call_id = ""
     status = str(state.get("status") or "idle")
+    agent1_cluster_council = _agent1_cluster_council_from_events(events)
+    flow_coverage = _flow_coverage_from_events(events, state=state)
     for event in events:
         last_event_at = str(event.get("timestamp") or last_event_at)
         agent = str(event.get("agent") or "")
@@ -979,6 +1266,8 @@ def _manifest_from_events(state: dict[str, Any], events: list[dict[str, Any]]) -
             "job_id": str(state.get("job_id") or ""),
             "project_name": str(state.get("project_name") or ""),
             "output_dir": str(state.get("output_dir") or ""),
+            "attachment_manifest_path": str(state.get("attachment_manifest_path") or ""),
+            "attachment_context_path": str(state.get("attachment_context_path") or ""),
             "planning_mode": str(state.get("planning_mode") or "normal"),
             "credential_ref": str(state.get("apiKeyRef") or state.get("api_key_ref") or DEFAULT_CREDENTIAL_REF),
             "status": status,
@@ -994,6 +1283,8 @@ def _manifest_from_events(state: dict[str, Any], events: list[dict[str, Any]]) -
             "queue": queue,
             "metrics": metrics,
             "artifact_refs": list(dict.fromkeys(artifact_refs)),
+            "agent1_cluster_council": agent1_cluster_council,
+            "flow_coverage": flow_coverage,
         }
     )
 
@@ -1025,7 +1316,314 @@ def _merge_metrics(metrics: dict[str, Any], event: dict[str, Any]) -> None:
         elif name in {"estimated_cost_usd", "codex_estimated_cost_usd"}:
             agent_metrics["estimatedCostUsd"] = round(float(agent_metrics.get("estimatedCostUsd") or 0.0) + float(value), 8)
         metrics[name] = value
+    source = event.get("source") if isinstance(event.get("source"), dict) else {}
+    if str(event.get("event_type") or "") in AGENT1_CLUSTER_EVENT_TYPES:
+        group_id = str(source.get("group_id") or source.get("target_group_id") or source.get("owner_group_id") or "")
+        cluster = metrics.setdefault("agent1Cluster", {"groups": {}})
+        if group_id:
+            group_metrics = cluster.setdefault("groups", {}).setdefault(group_id, {"callCount": 0, "retryCount": 0, "failureCount": 0})
+            if str(event.get("event_type") or "") in {"agent1_group_session_done", "agent1_leaf_expert_done"}:
+                group_metrics["callCount"] = int(group_metrics.get("callCount") or 0) + 1
+            if str(event.get("event_type") or "") in {"agent1_group_session_failed", "agent1_leaf_expert_failed"}:
+                group_metrics["failureCount"] = int(group_metrics.get("failureCount") or 0) + 1
+            if str(event.get("event_type") or "") in {"agent1_group_retry", "agent1_leaf_expert_retry"}:
+                group_metrics["retryCount"] = int(group_metrics.get("retryCount") or 0) + 1
+            for key in ("latency_s", "latency_ms", "prompt_tokens", "completion_tokens", "total_tokens", "estimated_cost_usd"):
+                if key in event_metrics:
+                    group_metrics[key] = event_metrics[key]
     metrics["source"] = "runtime_event"
+
+FLOW_SEGMENT_DEFS: tuple[dict[str, str], ...] = (
+    {"id": "frontend_input", "label": "Frontend Input", "owner": "frontend"},
+    {"id": "settings_preflight", "label": "Settings/Test Connection", "owner": "frontend"},
+    {"id": "credential_preflight", "label": "Credential Preflight", "owner": "backend"},
+    {"id": "attachment_staging", "label": "Attachment Staging", "owner": "backend"},
+    {"id": "start_request", "label": "Start Request", "owner": "backend"},
+    {"id": "job_queue", "label": "Job Queue", "owner": "backend"},
+    {"id": "runner_process", "label": "Runner Process", "owner": "runner"},
+    {"id": "websocket", "label": "WebSocket Replay/Hydration", "owner": "websocket"},
+    {"id": "live_input", "label": "Live Follow-Up Input", "owner": "frontend"},
+    {"id": "agent1_intake", "label": "Agent1 Intake", "owner": "agent1"},
+    {"id": "agent1_cluster", "label": "Agent1 Cluster Council", "owner": "agent1"},
+    {"id": "agent1_guardrail", "label": "Agent1 Guardrails", "owner": "agent1"},
+    {"id": "plan_review", "label": "Plan Review", "owner": "frontend"},
+    {"id": "agent1_artifacts", "label": "Agent1 Artifacts", "owner": "artifact"},
+    {"id": "agent2_gate", "label": "Agent2 Handoff Gate", "owner": "agent2"},
+    {"id": "agent2_rtl", "label": "Agent2 RTL", "owner": "agent2"},
+    {"id": "downstream_agents", "label": "Agent3/4/5 Downstream", "owner": "agent3"},
+    {"id": "signoff", "label": "Final Signoff", "owner": "signoff"},
+)
+
+FLOW_SEGMENT_ORDER = {item["id"]: index for index, item in enumerate(FLOW_SEGMENT_DEFS)}
+
+def _flow_coverage_from_events(events: list[dict[str, Any]], *, state: dict[str, Any] | None = None, debug_issues: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    state = state or {}
+    debug_issues = debug_issues or []
+    segments = {
+        item["id"]: {
+            "id": item["id"],
+            "label": item["label"],
+            "owner_layer": item["owner"],
+            "status": "missing",
+            "first_timestamp": "",
+            "last_timestamp": "",
+            "span_ids": [],
+            "last_issue_code": "",
+        }
+        for item in FLOW_SEGMENT_DEFS
+    }
+
+    def mark(segment_id: str, status: str, event: dict[str, Any] | None = None, *, issue_code: str = "") -> None:
+        if segment_id not in segments:
+            return
+        segment = segments[segment_id]
+        current = str(segment.get("status") or "missing")
+        if _flow_status_rank(status) >= _flow_status_rank(current):
+            segment["status"] = status
+        ts = str((event or {}).get("timestamp") or "")
+        if ts and not segment["first_timestamp"]:
+            segment["first_timestamp"] = ts
+        if ts:
+            segment["last_timestamp"] = ts
+        corr = str((event or {}).get("correlation_id") or "")
+        if corr and corr not in segment["span_ids"]:
+            segment["span_ids"].append(corr)
+        if issue_code:
+            segment["last_issue_code"] = issue_code
+
+    if state.get("run_id"):
+        mark("frontend_input", "completed")
+    if state.get("attachment_manifest_path"):
+        mark("attachment_staging", "completed")
+    if not state.get("attachment_manifest_path"):
+        mark("attachment_staging", "skipped")
+
+    agent1_cluster_event_seen = False
+    agent1_fast_path_seen = False
+    for event in events:
+        event_type = str(event.get("event_type") or "")
+        status = str(event.get("status") or "")
+        node_id = str(event.get("node_id") or "")
+        agent = str(event.get("agent") or "")
+        message = str(event.get("message") or "")
+        source = event.get("source") if isinstance(event.get("source"), dict) else {}
+        source_type = str(source.get("type") or "")
+        source_flow = str(source.get("flow_segment") or "")
+        if source_flow:
+            mark(source_flow, "failed" if status == "failed" else "completed" if status in {"passed", "queued", "cancelled"} else "started", event)
+        if event_type == "run_init":
+            mark("start_request", "completed", event)
+        if event_type == "job_queued":
+            mark("job_queue", "started", event)
+        if event_type == "job_started":
+            mark("job_queue", "completed", event)
+            mark("runner_process", "started", event)
+        if event_type == "job_done":
+            mark("runner_process", "failed" if status == "failed" else "completed", event)
+            if status == "passed":
+                mark("signoff", "completed", event)
+            elif status in {"failed", "cancelled"}:
+                mark("signoff", "failed" if status == "failed" else "skipped", event)
+        if event_type == "watchdog_timeout":
+            mark("runner_process", "failed", event, issue_code="watchdog_timeout")
+        if event_type in {"tool_call_start", "tool_call_done"} and "LIVE_INPUT" in node_id:
+            mark("live_input", "failed" if status == "failed" else "completed" if event_type.endswith("_done") else "started", event)
+        if source_type in {"websocket_connect", "websocket_replay", "websocket_hydrate"} or "WEBSOCKET" in node_id:
+            mark("websocket", "failed" if status == "failed" else "completed", event)
+        if "INTAKE" in node_id or "intake" in message.lower():
+            mark("agent1_intake", "failed" if status == "failed" else "completed" if status in {"passed", "paused"} else "started", event)
+        if event_type in AGENT1_CLUSTER_EVENT_TYPES:
+            agent1_cluster_event_seen = True
+            mark("agent1_cluster", "failed" if status == "failed" else "completed" if event_type in {"agent1_principal_group_review", "agent1_group_session_done"} else "started", event)
+        if "SIMPLE_DESIGN_FAST_PATH" in node_id or "simple design fast-path" in message.lower():
+            agent1_fast_path_seen = True
+        if "GUARDRAIL" in node_id or "guardrail" in message.lower():
+            mark("agent1_guardrail", "failed" if status == "failed" else "completed" if status == "passed" else "started", event)
+        if "PLAN_REVIEW" in node_id or "PLAN_REVIEW" in message or source.get("action_required") == "PLAN_REVIEW":
+            mark("plan_review", "failed" if status == "failed" else "started" if status == "paused" else "completed", event)
+        if event_type == "artifact_written" and (agent == "agent1" or "agent1" in " ".join(str(ref) for ref in event.get("artifact_refs") or [])):
+            mark("agent1_artifacts", "failed" if status == "failed" else "completed", event)
+        if event_type == "tool_call_done" and (str(source.get("to_agent") or "") == "agent2" or "agent2" in str(source.get("contract") or "").lower() or "AGENT2" in node_id):
+            mark("agent2_gate", "failed" if status == "failed" else "completed", event)
+        if agent == "agent2" or node_id.startswith("STAGE.RTL") or ("RTL" in node_id and not node_id.startswith("HANDOFF.")):
+            mark("agent2_rtl", "failed" if status == "failed" else "completed" if status == "passed" else "started", event)
+        if agent in {"agent3", "agent4", "agent5"} or any(token in node_id for token in ("AGENT3", "AGENT4", "AGENT5", "FORMAL", "DV", "PHYSICAL")):
+            mark("downstream_agents", "failed" if status == "failed" else "completed" if status == "passed" else "started", event)
+        if event_type in TERMINAL_EVENT_TYPES and status == "failed":
+            mark("signoff", "failed", event, issue_code=event_type)
+
+    for optional in ("settings_preflight", "job_queue", "websocket", "live_input", "downstream_agents"):
+        if segments[optional]["status"] == "missing":
+            segments[optional]["status"] = "skipped"
+    cluster_manifest = state.get("agent1_cluster_council") if isinstance(state.get("agent1_cluster_council"), dict) else {}
+    cluster_mode = str(cluster_manifest.get("mode") or "").lower()
+    if not agent1_cluster_event_seen and (agent1_fast_path_seen or cluster_mode in {"legacy", "fast_path", "simple_fast_path", "deterministic_fast_path"}):
+        for optional in ("agent1_cluster", "agent1_guardrail"):
+            if segments[optional]["status"] == "missing":
+                segments[optional]["status"] = "skipped"
+                segments[optional]["last_issue_code"] = ""
+    if segments["credential_preflight"]["status"] == "missing" and segments["runner_process"]["status"] in {"started", "completed"}:
+        segments["credential_preflight"]["last_issue_code"] = "flow_missing_credential_preflight"
+    if segments["agent2_gate"]["status"] == "missing" and segments["agent2_rtl"]["status"] in {"started", "completed", "failed"}:
+        segments["agent2_gate"]["last_issue_code"] = "flow_missing_agent2_gate"
+
+    for issue in debug_issues:
+        details = issue.get("details") if isinstance(issue.get("details"), dict) else {}
+        segment_id = str(issue.get("flow_segment") or details.get("flow_segment") or "")
+        if segment_id in segments:
+            if str(issue.get("code") or "") == "flow_missing_required_span" and str(segments[segment_id].get("status") or "") == "skipped":
+                continue
+            mark(segment_id, "failed" if str(issue.get("severity") or "") in {"error", "fatal"} else str(segments[segment_id]["status"]), issue, issue_code=str(issue.get("code") or "debug_issue"))
+
+    missing = [segment_id for segment_id, segment in segments.items() if segment["status"] == "missing"]
+    failed = [segment_id for segment_id, segment in segments.items() if segment["status"] == "failed"]
+    return redact_runtime_payload(
+        {
+            "schema_version": "studio.runtime_flow_coverage.v1",
+            "segments": segments,
+            "missing_segments": missing,
+            "failed_segments": failed,
+            "missing_span_count": len(missing),
+            "failed_segment_count": len(failed),
+            "ok": not failed and not any(segments[item]["last_issue_code"] for item in segments if segments[item]["status"] == "missing"),
+        }
+    )
+
+def _flow_status_rank(status: str) -> int:
+    return {"missing": 0, "skipped": 1, "started": 2, "completed": 3, "failed": 4}.get(status, 0)
+
+def _agent1_cluster_council_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    group_sessions: dict[str, dict[str, Any]] = {}
+    assignments: list[dict[str, Any]] = []
+    leaf_experts: dict[str, dict[str, Any]] = {}
+    retry_tree: list[dict[str, Any]] = []
+    challenges: list[dict[str, Any]] = []
+    principal_reviews: list[dict[str, Any]] = []
+    questions: dict[str, dict[str, Any]] = {}
+    answers: list[dict[str, Any]] = []
+    mode = "legacy"
+    topology_hash = ""
+    cluster_assignment_hash = ""
+    for event in events:
+        event_type = str(event.get("event_type") or "")
+        if event_type not in AGENT1_CLUSTER_EVENT_TYPES:
+            continue
+        source = event.get("source") if isinstance(event.get("source"), dict) else {}
+        timestamp = str(event.get("timestamp") or "")
+        group_id = str(source.get("group_id") or source.get("target_group_id") or source.get("owner_group_id") or "")
+        session_key = _cluster_session_key(event, source)
+        if event_type == "agent1_council_mode_selected":
+            mode = str(source.get("mode") or "group_session")
+        elif event_type == "agent1_topology_loaded":
+            topology_hash = str(source.get("topology_hash") or topology_hash)
+        elif event_type == "agent1_cluster_assignment":
+            cluster_assignment_hash = str(source.get("cluster_assignment_hash") or cluster_assignment_hash)
+            assignments.append(_cluster_source_snapshot(event, source))
+        elif event_type in {"agent1_group_session_start", "agent1_group_session_done", "agent1_group_session_failed"}:
+            session = group_sessions.setdefault(
+                session_key,
+                {
+                    "span_id": str(source.get("span_id") or session_key),
+                    "group_id": group_id,
+                    "manager_id": str(source.get("manager_id") or ""),
+                    "leaf_expert_ids": source.get("leaf_expert_ids") or [],
+                    "guest_expert_ids": source.get("guest_expert_ids") or [],
+                    "attempt": source.get("attempt") or 1,
+                    "status": "running",
+                    "metrics": {},
+                },
+            )
+            session["status"] = "failed" if event_type == "agent1_group_session_failed" else "passed" if event_type == "agent1_group_session_done" else "running"
+            session["updated_at"] = timestamp
+            if event_type == "agent1_group_session_start":
+                session["started_at"] = timestamp
+            else:
+                session["ended_at"] = timestamp
+            session["metrics"] = {**(session.get("metrics") or {}), **(event.get("metrics") if isinstance(event.get("metrics"), dict) else {})}
+            session["model_call_id"] = str(source.get("model_call_id") or session.get("model_call_id") or "")
+            session["confidence"] = source.get("confidence", session.get("confidence"))
+        elif event_type in {"agent1_leaf_expert_start", "agent1_leaf_expert_done", "agent1_leaf_expert_failed", "agent1_leaf_expert_retry"}:
+            expert_id = str(source.get("expert_id") or session_key)
+            leaf = leaf_experts.setdefault(
+                expert_id,
+                {
+                    "expert_id": expert_id,
+                    "span_id": str(source.get("span_id") or session_key),
+                    "group_id": group_id,
+                    "iteration": source.get("iteration") or 1,
+                    "status": "running",
+                    "retry_count": 0,
+                    "metrics": {},
+                },
+            )
+            leaf["updated_at"] = timestamp
+            leaf["model_call_id"] = str(source.get("model_call_id") or leaf.get("model_call_id") or "")
+            if event_type == "agent1_leaf_expert_start":
+                leaf["status"] = "running"
+                leaf["started_at"] = timestamp
+            elif event_type == "agent1_leaf_expert_retry":
+                leaf["retry_count"] = max(int(leaf.get("retry_count") or 0), int(source.get("retry_count") or 1))
+                leaf.setdefault("retry_events", []).append(_cluster_source_snapshot(event, source))
+            else:
+                leaf["status"] = "failed" if event_type == "agent1_leaf_expert_failed" else "passed"
+                leaf["ended_at"] = timestamp
+                leaf["retry_count"] = max(int(leaf.get("retry_count") or 0), int(source.get("retry_count") or 0))
+                if source.get("error_class"):
+                    leaf["error_class"] = str(source.get("error_class"))
+            leaf["metrics"] = {**(leaf.get("metrics") or {}), **(event.get("metrics") if isinstance(event.get("metrics"), dict) else {})}
+        elif event_type == "agent1_group_retry":
+            retry_tree.append(_cluster_source_snapshot(event, source))
+        elif event_type == "agent1_cross_group_challenge":
+            challenges.append(_cluster_source_snapshot(event, source))
+        elif event_type == "agent1_principal_group_review":
+            principal_reviews.append(_cluster_source_snapshot(event, source))
+        elif event_type == "agent1_clarification_question":
+            question_id = str(source.get("question_id") or session_key)
+            questions[question_id] = _cluster_source_snapshot(event, source)
+        elif event_type == "agent1_clarification_answer":
+            answers.append(_cluster_source_snapshot(event, source))
+    answered = {str((item.get("source") or {}).get("question_id") or item.get("question_id") or "") for item in answers}
+    pending = [question_id for question_id in questions if question_id not in answered]
+    return redact_runtime_payload(
+        {
+            "schema_version": "studio.agent1_cluster_council.v1",
+            "mode": mode,
+            "topology_hash": topology_hash,
+            "cluster_assignment_hash": cluster_assignment_hash,
+            "cluster_assignments": assignments[-20:],
+            "group_sessions": group_sessions,
+            "leaf_experts": leaf_experts,
+            "retry_tree": retry_tree[-50:],
+            "challenges": challenges[-50:],
+            "principal_reviews": principal_reviews[-50:],
+            "clarification": {
+                "questions": list(questions.values())[-50:],
+                "answers": answers[-50:],
+                "pending_question_ids": pending,
+            },
+        }
+    )
+
+def _cluster_session_key(event: dict[str, Any], source: dict[str, Any]) -> str:
+    return str(
+        source.get("span_id")
+        or source.get("model_call_id")
+        or event.get("correlation_id")
+        or f"{source.get('iteration') or 1}:{source.get('group_id') or source.get('target_group_id') or 'global'}:{source.get('attempt') or 1}"
+    )
+
+def _cluster_source_snapshot(event: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+    return redact_runtime_payload(
+        {
+            "event_type": event.get("event_type"),
+            "status": event.get("status"),
+            "timestamp": event.get("timestamp"),
+            "node_id": event.get("node_id"),
+            "message": event.get("message"),
+            "source": source,
+            "metrics": event.get("metrics") or {},
+        }
+    )
 
 
 def build_runtime_invariant_report(output_dir: str | Path, *, manifest: dict[str, Any] | None = None, events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -1061,7 +1659,7 @@ def build_runtime_invariant_report(output_dir: str | Path, *, manifest: dict[str
                 issue = {"code": "done_without_start", "index": index, "kind": key[0], "event_type": event_type, "correlation_id": corr}
                 if key[0] in STRICT_PAIR_KINDS:
                     failures.append(issue)
-                else:
+                elif key[0] in WARNING_PAIR_KINDS:
                     warnings.append(issue)
             else:
                 starts[key] -= 1
@@ -1087,8 +1685,10 @@ def build_runtime_invariant_report(output_dir: str | Path, *, manifest: dict[str
         unbalanced_pairs.append(issue)
         if kind in STRICT_PAIR_KINDS and status in {"done", "failed", "stopped", "recovered"}:
             failures.append(issue)
-        elif status in {"done", "failed", "stopped", "recovered"} or kind in STRICT_PAIR_KINDS:
+        elif kind in WARNING_PAIR_KINDS and status in {"done", "failed", "stopped", "recovered"}:
             warnings.append(issue)
+    _check_agent1_cluster_invariants(events, manifest, failures, warnings)
+    _check_flow_coverage_invariants(events, manifest, output_dir, failures, warnings)
     report = {
         "schema_version": "studio.runtime_invariant_report.v1",
         "output_dir": str(output_dir),
@@ -1101,8 +1701,90 @@ def build_runtime_invariant_report(output_dir: str | Path, *, manifest: dict[str
         "unbalanced_pairs": unbalanced_pairs,
         "secret_scan": "pass" if not any(item.get("code") == "secret_like_text" for item in failures) else "fail",
         "event_count": len(events),
+        "agent1_leaf_resilience": _agent1_leaf_resilience_summary(events),
     }
     return redact_runtime_payload(report)
+
+
+def _agent1_leaf_resilience_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
+    leaf: dict[str, dict[str, Any]] = {}
+    for event in events:
+        event_type = str(event.get("event_type") or "")
+        if event_type not in {"agent1_leaf_expert_start", "agent1_leaf_expert_retry", "agent1_leaf_expert_done", "agent1_leaf_expert_failed"}:
+            continue
+        source = event.get("source") if isinstance(event.get("source"), dict) else {}
+        expert_id = str(source.get("expert_id") or source.get("span_id") or event.get("correlation_id") or "")
+        if not expert_id:
+            continue
+        item = leaf.setdefault(expert_id, {"expert_id": expert_id, "status": "unknown", "retry_count": 0, "events": []})
+        item["events"].append(event_type)
+        if event_type == "agent1_leaf_expert_retry":
+            item["retry_count"] = max(int(item.get("retry_count") or 0), int(source.get("retry_count") or len([name for name in item["events"] if name == "agent1_leaf_expert_retry"])))
+        elif event_type == "agent1_leaf_expert_done":
+            item["status"] = "passed"
+        elif event_type == "agent1_leaf_expert_failed":
+            item["status"] = "failed"
+            item["retry_count"] = max(int(item.get("retry_count") or 0), int(source.get("retry_count") or 0))
+            if source.get("error_class"):
+                item["error_class"] = str(source.get("error_class"))
+    failed = [item for item in leaf.values() if item.get("status") == "failed"]
+    retried = [item for item in leaf.values() if int(item.get("retry_count") or 0) > 0]
+    return {
+        "leaf_count": len(leaf),
+        "failed_count": len(failed),
+        "retried_count": len(retried),
+        "failed_expert_ids": sorted(str(item.get("expert_id")) for item in failed),
+        "retried_expert_ids": sorted(str(item.get("expert_id")) for item in retried),
+        "leaf_experts": leaf,
+    }
+
+
+def _debug_issues_from_invariant(state: dict[str, Any], output_dir: str, invariant: dict[str, Any]) -> list[dict[str, Any]]:
+    artifact_ref = str(runtime_file(output_dir, INVARIANT_NAME))
+    issues: list[dict[str, Any]] = []
+    for severity, findings in (("error", invariant.get("failures")), ("warning", invariant.get("warnings"))):
+        if not isinstance(findings, list):
+            continue
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            code = str(finding.get("code") or "runtime_invariant")
+            issues.append(
+                {
+                    "type": "debug_issue",
+                    "schema_version": "swarm.debug_issue.v1",
+                    "severity": severity,
+                    "source": "runtime",
+                    "code": code,
+                    "message": f"Runtime invariant {severity}: {code}",
+                    "details": {
+                        "finding": finding,
+                        "invariant_ok": invariant.get("ok"),
+                        "checked_at": invariant.get("checked_at"),
+                    },
+                    "flow_segment": str(finding.get("flow_segment") or ""),
+                    "source_layer": str(finding.get("source_layer") or ""),
+                    "span_id": str(finding.get("span_id") or finding.get("correlation_id") or ""),
+                    "run_id": str(state.get("run_id") or invariant.get("run_id") or ""),
+                    "revision_id": "",
+                    "artifact_ref": artifact_ref,
+                    "node_id": "RUNTIME.INVARIANT",
+                    "timestamp": str(invariant.get("checked_at") or utc_now_iso()),
+                }
+            )
+    return issues
+
+
+def _debug_issue_signature(issue: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    details = issue.get("details") if isinstance(issue.get("details"), dict) else {}
+    finding = details.get("finding") if isinstance(details.get("finding"), dict) else {}
+    return (
+        str(issue.get("run_id") or ""),
+        str(issue.get("source") or ""),
+        str(issue.get("code") or ""),
+        str(finding.get("kind") or ""),
+        str(finding.get("correlation_id") or finding.get("index") or finding.get("location") or ""),
+    )
 
 
 def build_runtime_replay_report(output_dir: str | Path, *, manifest: dict[str, Any] | None = None, events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -1131,11 +1813,44 @@ def build_runtime_replay_report(output_dir: str | Path, *, manifest: dict[str, A
         "by_type": by_type,
         "by_agent": by_agent,
         "by_source_type": by_source_type,
+        "flow_coverage": manifest.get("flow_coverage") or _flow_coverage_from_events(events, state={"run_id": manifest.get("run_id") or ""}),
         "replay_status": "pass" if events else "empty",
     }
     _write_json_atomic(runtime_file(output_dir, REPLAY_NAME), report)
     return redact_runtime_payload(report)
 
+
+def build_runtime_flow_coverage_report(output_dir: str | Path, *, manifest: dict[str, Any] | None = None, events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    events = events if events is not None else read_runtime_events(output_dir)
+    manifest = manifest if manifest is not None else _safe_read_json(runtime_file(output_dir, MANIFEST_NAME)).get("payload") or {}
+    issues = read_debug_issues(output_dir)
+    coverage = _flow_coverage_from_events(events, state=manifest, debug_issues=issues)
+    missing_span_findings = _flow_missing_span_findings(coverage)
+    artifact_path = _manifest_attachment_path(manifest, output_dir)
+    report = {
+        "schema_version": "studio.runtime_flow_coverage_report.v1",
+        "output_dir": str(output_dir),
+        "checked_at": utc_now_iso(),
+        "run_id": manifest.get("run_id") or "",
+        "revision_id": manifest.get("revision_id") or "",
+        "event_count": len(events),
+        "debug_issue_count": len(issues),
+        "coverage": coverage,
+        "segments": coverage.get("segments") or {},
+        "canonical_span_model": _canonical_span_model_from_events(events, manifest),
+        "missing_span_detector": {
+            "missing_span_count": len([item for item in missing_span_findings if item.get("code") == "flow_missing_required_span"]),
+            "finding_count": len(missing_span_findings),
+            "findings": missing_span_findings,
+        },
+        "artifact_check": {
+            "attachment_manifest_path": str(artifact_path or ""),
+            "attachment_manifest_exists": bool(artifact_path),
+        },
+        "ok": bool(coverage.get("ok")) and not any(item.get("code") != "flow_missing_required_span" for item in missing_span_findings),
+    }
+    _write_json_atomic(runtime_file(output_dir, FLOW_COVERAGE_NAME), report)
+    return redact_runtime_payload(report)
 
 def build_runtime_debug_summary(
     output_dir: str | Path,
@@ -1143,12 +1858,16 @@ def build_runtime_debug_summary(
     manifest: dict[str, Any] | None = None,
     invariant: dict[str, Any] | None = None,
     replay: dict[str, Any] | None = None,
+    flow: dict[str, Any] | None = None,
     events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     events = events if events is not None else read_runtime_events(output_dir)
     manifest = manifest if manifest is not None else _safe_read_json(runtime_file(output_dir, MANIFEST_NAME)).get("payload") or {}
     invariant = invariant if invariant is not None else _safe_read_json(runtime_file(output_dir, INVARIANT_NAME)).get("payload") or {}
     replay = replay if replay is not None else _safe_read_json(runtime_file(output_dir, REPLAY_NAME)).get("payload") or {}
+    flow = flow if flow is not None else _safe_read_json(runtime_file(output_dir, FLOW_COVERAGE_NAME)).get("payload") or {}
+    flow_coverage = flow.get("coverage") if isinstance(flow.get("coverage"), dict) else manifest.get("flow_coverage") if isinstance(manifest.get("flow_coverage"), dict) else {}
+    flow_missing = flow.get("missing_span_detector") if isinstance(flow.get("missing_span_detector"), dict) else {}
     last_error = next((event for event in reversed(events) if event.get("status") == "failed" or event.get("error")), None)
     summary = {
         "schema_version": "studio.runtime_debug_summary.v1",
@@ -1167,6 +1886,9 @@ def build_runtime_debug_summary(
         "invariant_ok": invariant.get("ok"),
         "secret_scan": invariant.get("secret_scan"),
         "replay_status": replay.get("replay_status"),
+        "flow_coverage_ok": flow.get("ok", flow_coverage.get("ok")),
+        "flow_missing_span_count": flow_missing.get("missing_span_count", flow_coverage.get("missing_span_count")),
+        "flow_failed_segment_count": flow_coverage.get("failed_segment_count"),
     }
     _write_json_atomic(runtime_file(output_dir, DEBUG_SUMMARY_NAME), summary)
     return redact_runtime_payload(summary)
@@ -1191,6 +1913,7 @@ def _check_non_negative_metrics(event: dict[str, Any], failures: list[dict[str, 
 
 def _check_artifact_refs(event: dict[str, Any], output_dir: str | Path, failures: list[dict[str, Any]], index: int) -> None:
     root = Path(output_dir).resolve(strict=False)
+    event_type = str(event.get("event_type") or "")
     for ref in event.get("artifact_refs") or []:
         if not isinstance(ref, str) or not ref:
             continue
@@ -1199,6 +1922,374 @@ def _check_artifact_refs(event: dict[str, Any], output_dir: str | Path, failures
             failures.append({"code": "artifact_outside_output_sandbox", "index": index, "path": ref})
         if ".." in path.parts:
             failures.append({"code": "artifact_relative_traversal", "index": index, "path": ref})
+        if event_type == "artifact_written":
+            resolved = path if path.is_absolute() else root / path
+            if not resolved.exists():
+                failures.append({"code": "flow_missing_artifact_file", "index": index, "path": ref, "flow_segment": "agent1_artifacts" if str(event.get("agent") or "") == "agent1" else "agent2_gate", "source_layer": "artifact"})
+
+def _check_agent1_cluster_invariants(events: list[dict[str, Any]], manifest: dict[str, Any], failures: list[dict[str, Any]], warnings: list[dict[str, Any]]) -> None:
+    known_groups: set[str] = set()
+    known_questions: set[str] = set()
+    answered_questions: set[str] = set()
+    span_ids: set[str] = set()
+    group_starts: dict[str, dict[str, Any]] = {}
+    group_failures: dict[str, dict[str, Any]] = {}
+    leaf_starts: dict[str, dict[str, Any]] = {}
+    leaf_retries: dict[str, int] = {}
+    challenges: dict[str, dict[str, Any]] = {}
+    agent2_handoff_seen = False
+    status = str(manifest.get("status") or "")
+    terminal = status in {"done", "failed", "stopped", "recovered"}
+    for index, event in enumerate(events):
+        event_type = str(event.get("event_type") or "")
+        source = event.get("source") if isinstance(event.get("source"), dict) else {}
+        source_type = str(source.get("type") or "")
+        span_id = str(source.get("span_id") or event.get("correlation_id") or "")
+        parent_span_id = str(source.get("parent_span_id") or "")
+        if span_id:
+            span_ids.add(span_id)
+        if parent_span_id and parent_span_id not in span_ids:
+            failures.append({"code": "agent1_cluster_orphan_span", "index": index, "span_id": span_id, "parent_span_id": parent_span_id})
+        for key in ("group_id", "owner_group_id"):
+            if source.get(key):
+                known_groups.add(str(source.get(key)))
+        if source_type == "agent_handoff" and (str(source.get("to_agent") or "") == "agent2" or "agent2" in str(source.get("contract") or "").lower()):
+            agent2_handoff_seen = True
+        if event_type == "agent1_group_session_start":
+            group_starts[span_id] = event
+            group_failures.pop(span_id, None)
+        elif event_type in AGENT1_GROUP_SESSION_TERMINALS:
+            if span_id not in group_starts:
+                failures.append({"code": "agent1_group_done_without_start", "index": index, "span_id": span_id, "event_type": event_type})
+            else:
+                group_starts.pop(span_id, None)
+            if event_type == "agent1_group_session_failed":
+                group_failures[span_id] = event
+            else:
+                group_failures.pop(span_id, None)
+        elif event_type == "agent1_principal_group_review" and group_starts:
+            failures.append({"code": "agent1_principal_review_before_groups_done", "index": index, "running_group_spans": sorted(group_starts)})
+        elif event_type == "agent1_group_retry":
+            targets = _agent1_retry_targets(source)
+            if not targets:
+                failures.append({"code": "agent1_retry_target_group_unknown", "index": index, "target_group_id": ""})
+            for target in targets:
+                if target not in known_groups:
+                    failures.append({"code": "agent1_retry_target_group_unknown", "index": index, "target_group_id": target})
+                    continue
+                for failed_span, failed_event in list(group_failures.items()):
+                    failed_source = failed_event.get("source") if isinstance(failed_event.get("source"), dict) else {}
+                    if str(failed_source.get("group_id") or "") == target:
+                        group_failures.pop(failed_span, None)
+        elif event_type == "agent1_leaf_expert_start":
+            leaf_starts[span_id] = event
+            if source.get("expert_id"):
+                known_groups.add(str(source.get("group_id") or ""))
+        elif event_type == "agent1_leaf_expert_retry":
+            if span_id not in leaf_starts:
+                failures.append({"code": "agent1_leaf_retry_without_start", "index": index, "span_id": span_id, "expert_id": source.get("expert_id")})
+            leaf_retries[span_id] = leaf_retries.get(span_id, 0) + 1
+        elif event_type in {"agent1_leaf_expert_done", "agent1_leaf_expert_failed"}:
+            if span_id not in leaf_starts:
+                failures.append({"code": "agent1_leaf_done_without_start", "index": index, "span_id": span_id, "expert_id": source.get("expert_id"), "event_type": event_type})
+            else:
+                leaf_starts.pop(span_id, None)
+            if event_type == "agent1_leaf_expert_failed" and int(source.get("retry_count") or 0) != leaf_retries.get(span_id, 0):
+                warnings.append({"code": "agent1_leaf_retry_count_mismatch", "index": index, "span_id": span_id, "expert_id": source.get("expert_id"), "source_retry_count": source.get("retry_count"), "observed_retry_count": leaf_retries.get(span_id, 0)})
+        elif event_type == "agent1_cross_group_challenge":
+            challenge_id = str(source.get("challenge_id") or span_id or f"challenge-{index}")
+            challenges[challenge_id] = {"event": event, "resolved": _challenge_resolved(event)}
+        elif event_type == "agent1_clarification_question":
+            question_id = str(source.get("question_id") or span_id or f"question-{index}")
+            known_questions.add(question_id)
+        elif event_type == "agent1_clarification_answer":
+            question_id = str(source.get("question_id") or "")
+            if question_id not in known_questions:
+                failures.append({"code": "agent1_clarification_answer_unknown_question", "index": index, "question_id": question_id})
+            answered_questions.add(question_id)
+    if group_starts:
+        issue = {"code": "agent1_group_start_without_done", "running_group_spans": sorted(group_starts), "terminal_status": status}
+        if terminal:
+            failures.append(issue)
+    if leaf_starts and terminal:
+        failures.append({"code": "agent1_leaf_start_without_terminal", "running_leaf_spans": sorted(leaf_starts), "terminal_status": status})
+    unresolved_challenges = [challenge_id for challenge_id, item in challenges.items() if not item.get("resolved")]
+    pending_questions = sorted(question for question in known_questions if question not in answered_questions)
+    if unresolved_challenges and agent2_handoff_seen:
+        failures.append({"code": "agent2_handoff_with_unresolved_agent1_challenge", "challenge_ids": unresolved_challenges})
+    if pending_questions and agent2_handoff_seen:
+        failures.append({"code": "agent2_handoff_with_pending_agent1_clarification", "question_ids": pending_questions})
+    if group_failures and agent2_handoff_seen:
+        failures.append({"code": "agent2_handoff_with_unresolved_agent1_group_failure", "group_failure_spans": sorted(group_failures)})
+
+def _check_flow_coverage_invariants(
+    events: list[dict[str, Any]],
+    manifest: dict[str, Any],
+    output_dir: str | Path,
+    failures: list[dict[str, Any]],
+    warnings: list[dict[str, Any]],
+) -> None:
+    coverage = _flow_coverage_from_events(events, state=manifest)
+    segments = coverage.get("segments") if isinstance(coverage.get("segments"), dict) else {}
+    status = str(manifest.get("status") or "")
+    terminal = status in {"done", "failed", "stopped", "recovered"}
+    start_seen = any(str(event.get("event_type") or "") == "run_init" for event in events)
+    process_seen = any(str(event.get("event_type") or "") in {"job_started", "job_done"} for event in events)
+    preflight_seen = any(_source_type(event) == "start_preflight" or str(event.get("node_id") or "") == "START.PREFLIGHT" for event in events)
+    agent2_seen = any(str(event.get("agent") or "") == "agent2" or "AGENT2" in str(event.get("node_id") or "") for event in events)
+    agent2_gate_seen = _segment_status(segments, "agent2_gate") == "completed"
+    handoff_seen = any(_is_agent2_handoff(event) for event in events)
+
+    if process_seen and not preflight_seen:
+        failures.append(
+            {
+                "code": "flow_missing_credential_preflight",
+                "flow_segment": "credential_preflight",
+                "source_layer": "backend",
+                "message": "runner process started before backend credential preflight was captured",
+            }
+        )
+    if start_seen and terminal and not process_seen:
+        failures.append(
+            {
+                "code": "flow_missing_required_span",
+                "flow_segment": "runner_process",
+                "source_layer": "runner",
+                "terminal_status": status,
+                "message": "terminal run has no runner process span",
+            }
+        )
+    if agent2_seen and not agent2_gate_seen:
+        failures.append(
+            {
+                "code": "flow_missing_agent2_gate",
+                "flow_segment": "agent2_gate",
+                "source_layer": "agent2",
+                "message": "Agent2 activity appeared without Agent1-to-Agent2 handoff gate",
+            }
+        )
+    if handoff_seen and _segment_status(segments, "agent1_artifacts") != "completed":
+        failures.append(
+            {
+                "code": "flow_agent2_handoff_with_stale_agent1_artifact",
+                "flow_segment": "agent2_gate",
+                "source_layer": "agent2",
+                "message": "Agent2 handoff happened before current Agent1 artifact fingerprint was visible",
+            }
+        )
+    _check_attachment_payload_match(events, manifest, output_dir, failures)
+    _check_websocket_replay_monotonic(events, failures)
+
+    for finding in _flow_missing_span_findings(coverage):
+        segment_id = str(finding.get("flow_segment") or "")
+        if finding.get("code") in {"flow_missing_agent2_gate", "flow_missing_credential_preflight"}:
+            continue
+        if segment_id in {"frontend_input", "start_request"} and terminal:
+            failures.append(finding)
+        elif segment_id in {"agent1_intake", "agent1_cluster", "agent1_guardrail", "plan_review", "agent1_artifacts"} and (terminal or handoff_seen or agent2_seen):
+            warnings.append(finding)
+
+def _source_type(event: dict[str, Any]) -> str:
+    source = event.get("source") if isinstance(event.get("source"), dict) else {}
+    return str(source.get("type") or "")
+
+def _agent1_retry_targets(source: dict[str, Any]) -> list[str]:
+    targets: list[str] = []
+    for key in ("target_group_id", "group_id"):
+        value = str(source.get(key) or "")
+        if value and value not in targets:
+            targets.append(value)
+    raw_many = source.get("target_group_ids")
+    if isinstance(raw_many, list):
+        for item in raw_many:
+            value = str(item or "")
+            if value and value not in targets:
+                targets.append(value)
+    return targets
+
+def _segment_status(segments: dict[str, Any], segment_id: str) -> str:
+    segment = segments.get(segment_id) if isinstance(segments, dict) else {}
+    return str(segment.get("status") or "missing") if isinstance(segment, dict) else "missing"
+
+def _agent1_flow_started(segments: dict[str, Any]) -> bool:
+    return any(_segment_status(segments, segment_id) in {"started", "completed", "failed"} for segment_id in ("agent1_intake", "agent1_cluster", "agent1_guardrail", "plan_review", "agent1_artifacts", "agent2_gate"))
+
+def _is_agent2_handoff(event: dict[str, Any]) -> bool:
+    source = event.get("source") if isinstance(event.get("source"), dict) else {}
+    return (
+        str(event.get("event_type") or "") == "tool_call_done"
+        and _source_type(event) == "agent_handoff"
+        and (str(source.get("to_agent") or "") == "agent2" or "agent2" in str(source.get("contract") or "").lower())
+    )
+
+def _check_attachment_payload_match(events: list[dict[str, Any]], manifest: dict[str, Any], output_dir: str | Path, failures: list[dict[str, Any]]) -> None:
+    requested: list[str] = []
+    saw_preflight = False
+    for event in events:
+        source = event.get("source") if isinstance(event.get("source"), dict) else {}
+        if str(source.get("type") or "") != "start_preflight":
+            continue
+        saw_preflight = True
+        value = source.get("attachment_ids")
+        if isinstance(value, list):
+            requested.extend(str(item) for item in value if item)
+    if not saw_preflight:
+        return
+    requested_set = set(requested)
+    manifest_path = _manifest_attachment_path(manifest, output_dir)
+    if not requested_set and not manifest_path:
+        return
+    committed_set: set[str] = set()
+    if manifest_path:
+        data = _safe_read_json(manifest_path).get("payload") or {}
+        attachments = data.get("attachments") if isinstance(data.get("attachments"), list) else []
+        committed_set = {str(item.get("id") or "") for item in attachments if isinstance(item, dict) and item.get("id")}
+    if requested_set != committed_set:
+        failures.append(
+            {
+                "code": "flow_attachment_payload_mismatch",
+                "flow_segment": "attachment_staging",
+                "source_layer": "backend",
+                "requested_attachment_ids": sorted(requested_set),
+                "committed_attachment_ids": sorted(committed_set),
+                "artifact_ref": str(manifest_path or ""),
+            }
+        )
+
+def _manifest_attachment_path(manifest: dict[str, Any], output_dir: str | Path | None = None) -> Path | None:
+    candidates = [str(manifest.get("attachment_manifest_path") or "")]
+    if output_dir:
+        candidates.append(str(Path(output_dir) / "inputs" / "attachments_manifest.json"))
+    if manifest.get("output_dir"):
+        candidates.append(str(Path(str(manifest.get("output_dir"))) / "inputs" / "attachments_manifest.json"))
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if path.is_file():
+            return path
+    return None
+
+def _check_websocket_replay_monotonic(events: list[dict[str, Any]], failures: list[dict[str, Any]]) -> None:
+    last_value: int | None = None
+    for index, event in enumerate(events):
+        source = event.get("source") if isinstance(event.get("source"), dict) else {}
+        if str(source.get("type") or "") != "websocket_replay":
+            continue
+        raw = source.get("replay_event_id", source.get("last_event_id", source.get("event_id")))
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if last_value is not None and value < last_value:
+            failures.append(
+                {
+                    "code": "flow_non_monotonic_websocket_replay",
+                    "flow_segment": "websocket",
+                    "source_layer": "websocket",
+                    "index": index,
+                    "previous_event_id": last_value,
+                    "event_id": value,
+                }
+            )
+        last_value = value
+
+def _flow_missing_span_findings(coverage: dict[str, Any]) -> list[dict[str, Any]]:
+    segments = coverage.get("segments") if isinstance(coverage.get("segments"), dict) else {}
+    findings: list[dict[str, Any]] = []
+    for segment_id, raw in segments.items():
+        if not isinstance(raw, dict):
+            continue
+        status = str(raw.get("status") or "missing")
+        issue_code = str(raw.get("last_issue_code") or "")
+        if issue_code:
+            findings.append(
+                {
+                    "code": issue_code,
+                    "flow_segment": str(segment_id),
+                    "source_layer": str(raw.get("owner_layer") or ""),
+                    "status": status,
+                    "span_ids": raw.get("span_ids") or [],
+                    "message": f"flow segment {segment_id} has issue {issue_code}",
+                }
+            )
+        elif status == "missing":
+            findings.append(
+                {
+                    "code": "flow_missing_required_span",
+                    "flow_segment": str(segment_id),
+                    "source_layer": str(raw.get("owner_layer") or ""),
+                    "status": status,
+                    "span_ids": raw.get("span_ids") or [],
+                    "message": f"flow segment {segment_id} has no captured span",
+                }
+            )
+    return findings
+
+def _canonical_span_model_from_events(events: list[dict[str, Any]], manifest: dict[str, Any]) -> dict[str, Any]:
+    run_id = str(manifest.get("run_id") or next((event.get("run_id") for event in events if event.get("run_id")), "") or "")
+    model_call_ids: list[str] = []
+    agent_span_ids: list[str] = []
+    artifact_span_ids: list[str] = []
+    parent_links: list[dict[str, str]] = []
+    spans = {
+        "run_span_id": f"run:{run_id}" if run_id else "",
+        "ui_action_span_id": "",
+        "backend_request_span_id": "",
+        "job_span_id": "",
+        "process_span_id": "",
+        "agent_span_id": "",
+        "model_call_id": "",
+        "artifact_span_id": "",
+    }
+    for event in events:
+        event_type = str(event.get("event_type") or "")
+        corr = str(event.get("correlation_id") or event.get("event_id") or "")
+        agent = str(event.get("agent") or "")
+        source = event.get("source") if isinstance(event.get("source"), dict) else {}
+        for key in spans:
+            if source.get(key) and not spans[key]:
+                spans[key] = str(source.get(key) or "")
+        parent = str(source.get("parent_span_id") or "")
+        child = str(source.get("span_id") or corr)
+        if parent and child:
+            parent_links.append({"parent_span_id": parent, "span_id": child, "event_type": event_type})
+        if event_type == "run_init" and not spans["backend_request_span_id"]:
+            spans["backend_request_span_id"] = corr
+        elif event_type == "job_queued" and not spans["job_span_id"]:
+            spans["job_span_id"] = corr
+        elif event_type in {"job_started", "job_done"} and not spans["process_span_id"]:
+            spans["process_span_id"] = corr
+        elif event_type in {"agent_start", "agent_done"} and agent.startswith("agent"):
+            if corr not in agent_span_ids:
+                agent_span_ids.append(corr)
+            if not spans["agent_span_id"]:
+                spans["agent_span_id"] = corr
+        elif event_type in {"model_call_start", "model_call_done"}:
+            if corr not in model_call_ids:
+                model_call_ids.append(corr)
+            if not spans["model_call_id"]:
+                spans["model_call_id"] = corr
+        elif event_type == "artifact_written":
+            artifact_span = str(source.get("artifact_span_id") or corr)
+            if artifact_span not in artifact_span_ids:
+                artifact_span_ids.append(artifact_span)
+            if not spans["artifact_span_id"]:
+                spans["artifact_span_id"] = artifact_span
+    return redact_runtime_payload(
+        {
+            **spans,
+            "agent_span_ids": agent_span_ids,
+            "model_call_ids": model_call_ids,
+            "artifact_span_ids": artifact_span_ids,
+            "parent_links": parent_links[-200:],
+        }
+    )
+
+def _challenge_resolved(event: dict[str, Any]) -> bool:
+    source = event.get("source") if isinstance(event.get("source"), dict) else {}
+    text = " ".join(str(value or "").lower() for value in (event.get("status"), source.get("status"), source.get("resolution")))
+    return any(token in text for token in ("resolved", "accepted", "rejected", "closed", "mitigated", "passed", "pass"))
 
 
 def _artifact_refs(event: dict[str, Any]) -> list[str]:
@@ -1244,6 +2335,93 @@ def _slug(value: str) -> str:
     return text[:64] or "node"
 
 
+def _agent_action_node_id(agent: str, action: str) -> str:
+    normalized = re.sub(r"\b(started|completed|complete|failed|passed|done)\b\s*$", "", action, flags=re.IGNORECASE).strip()
+    return f"{agent.upper()}.{_slug(normalized or action).upper()}"
+
+
+def _trace_runtime_type(event_type: str, status_value: str) -> str:
+    lowered = event_type.lower()
+    if lowered in {"node_started", "llm_call", "process_launch", "process_enter"}:
+        return "node_start"
+    if lowered in {"node_completed", "llm_call_completed", "completion", "process_finally"}:
+        return "node_done"
+    if lowered in {"node_start", "node_done"}:
+        return lowered
+    return "trace_event"
+
+def _agent1_cluster_status(kind: str, event: dict[str, Any]) -> str:
+    explicit = str(event.get("status") or "")
+    if explicit:
+        return _status(explicit)
+    if kind == "agent1_group_session_start":
+        return "running"
+    if kind in {"agent1_group_session_failed", "agent1_leaf_expert_failed"}:
+        return "failed"
+    if kind in {"agent1_group_session_done", "agent1_leaf_expert_done", "agent1_clarification_answer", "agent1_topology_loaded", "agent1_cluster_assignment", "agent1_council_mode_selected"}:
+        return "passed"
+    if kind in {"agent1_leaf_expert_start", "agent1_leaf_expert_retry"}:
+        return "running"
+    if kind == "agent1_clarification_question":
+        return "paused"
+    return "running"
+
+def _agent1_cluster_node_id(kind: str, group_id: str = "") -> str:
+    base = {
+        "agent1_topology_loaded": "AGENT1.TOPOLOGY",
+        "agent1_cluster_assignment": "AGENT1.CLUSTER_ROUTER",
+        "agent1_group_session_start": "AGENT1.GROUP_SESSION",
+        "agent1_group_session_done": "AGENT1.GROUP_SESSION",
+        "agent1_group_session_failed": "AGENT1.GROUP_SESSION",
+        "agent1_group_retry": "AGENT1.GROUP_RETRY",
+        "agent1_leaf_expert_start": "AGENT1.LEAF_EXPERT",
+        "agent1_leaf_expert_done": "AGENT1.LEAF_EXPERT",
+        "agent1_leaf_expert_failed": "AGENT1.LEAF_EXPERT",
+        "agent1_leaf_expert_retry": "AGENT1.LEAF_RETRY",
+        "agent1_cross_group_challenge": "AGENT1.CROSS_GROUP_CHALLENGE",
+        "agent1_principal_group_review": "AGENT1.PRINCIPAL_GROUP_REVIEW",
+        "agent1_clarification_question": "AGENT1.CLARIFICATION_QUESTION",
+        "agent1_clarification_answer": "AGENT1.CLARIFICATION_ANSWER",
+        "agent1_council_mode_selected": "AGENT1.COUNCIL_MODE",
+    }.get(kind, f"AGENT1.{_slug(kind).upper()}")
+    return f"{base}.{_slug(group_id).upper()}" if group_id else base
+
+def _cluster_duration_ms(event: dict[str, Any]) -> int:
+    for key, scale in (("latency_ms", 1), ("latency_s", 1000)):
+        try:
+            if event.get(key) is not None:
+                return max(0, int(float(event.get(key)) * scale))
+        except (TypeError, ValueError):
+            continue
+    return _duration_ms(event.get("metrics"))
+
+def _cluster_metrics(event: dict[str, Any]) -> dict[str, Any]:
+    metrics = dict(event.get("metrics")) if isinstance(event.get("metrics"), dict) else {}
+    for key in (
+        "latency_s",
+        "latency_ms",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "estimated_cost_usd",
+        "group_call_count",
+        "group_latency_s",
+        "group_prompt_tokens",
+        "group_completion_tokens",
+        "group_total_tokens",
+        "group_estimated_cost_usd",
+        "group_retry_count",
+    ):
+        if event.get(key) is not None:
+            metrics[key] = event.get(key)
+    return metrics
+
+
+def _is_model_text(action: str, summary: str) -> bool:
+    text = f"{action} {summary}".lower()
+    return any(marker in text for marker in ("codex", "model cx/", "model call", "model returned", "http://localhost:20128", "/v1", "api unavailable", "chat/completions"))
+
+
 def _is_model_start(action: str, summary: str) -> bool:
     text = f"{action} {summary}".lower()
     return "codex request started" in text or text.startswith("calling ") or " calling " in text
@@ -1256,7 +2434,7 @@ def _is_model_done(action: str, summary: str) -> bool:
 
 def _is_model_fail(action: str, summary: str, status: str) -> bool:
     text = f"{action} {summary}".lower()
-    return "codex unavailable" in text or status.lower() in {"fail", "failed", "error"}
+    return "codex unavailable" in text or ("unavailable" in text and _is_model_text(action, summary)) or (status.lower() in {"fail", "failed", "error"} and _is_model_text(action, summary))
 
 
 def _duration_ms(metrics: Any) -> int:

@@ -12,7 +12,6 @@ source_of_truth: false
 | Prompt | Canonical Path | Compliance Source | Tests |
 |---|---|---|---|
 | Semiconductor Swarm master prompt | `docs/semiconductor_swarm_ai.md` | `docs/prompt_compliance_matrix.yaml` | `tests/test_prompt_contracts.py` |
-| Agent1 SystemRDL/FW upgrade prompt | `docs/prompts/v3.5_agent1_systemrdl_fw_upgrade.md` | `docs/prompt_compliance_matrix.yaml` | `tests/test_prompt_contracts.py` |
 | Agent1 runtime prompt | `semiconductor_swarm/agents/agent1_planning/agent1_prompt.py` | `docs/prompts/index.md` | `tests/test_agent1.py` |
 | Agent2 runtime prompt | `semiconductor_swarm/agents/agent2_rtl/agent2_prompt.py` | `docs/prompts/index.md` | `tests/test_agent2.py` |
 | Agent3 runtime prompt | `semiconductor_swarm/agents/agent3_dv/agent3_prompt.py` | `docs/prompts/index.md` | `tests/test_agent3.py` |

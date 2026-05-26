@@ -14,7 +14,6 @@ from studio.backend.job_queue import InProcessJobQueue, JobNotFound
 from studio.backend.run_manifest import OutputPolicyError
 from studio.backend.runner import RunnerManager
 from semiconductor_swarm.agents.agent2_rtl.rtl_designer import generate_rtl_files, verify_rtl_files
-from semiconductor_swarm.tracing import TRACE_FILES, trace_event
 
 CredentialPreflight = Callable[[str | None], Awaitable[None]]
 
@@ -80,7 +79,7 @@ class AgentService:
             attachmentDraftId=str(payload.get("attachment_draft_id") or payload.get("attachmentDraftId") or ""),
             attachmentIds=list(payload.get("attachment_ids") or payload.get("attachmentIds") or []),
         )
-        job = await self.enqueue_job(request, preflight=False)
+        job = await self.enqueue_job(request, preflight=True)
         await self._wait_for_job_started(job.job_id)
         refreshed = await self.queue.get(job.job_id)
         if refreshed.status == "failed":
@@ -125,17 +124,6 @@ class AgentService:
             attachment_ids=request.attachment_ids,
         )
         await self.queue.enqueue(job)
-        trace_event(
-            TRACE_FILES["studio_flow"],
-            phase="backend",
-            agent="studio",
-            node_id="AGENT_SERVICE.ENQUEUE",
-            event_type="job_queued",
-            status="queued",
-            payload={"job_id": job.job_id, "job_type": job.type, "project_name": job.project_name},
-            output_dir=output_dir,
-            emit_live=False,
-        )
         self._ensure_worker()
         return job
 

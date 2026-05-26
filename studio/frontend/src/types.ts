@@ -86,6 +86,7 @@ export type RuntimeEvent = {
   artifact_refs: string[];
   metrics: Record<string, unknown>;
   error: Record<string, unknown> | null;
+  source?: Record<string, unknown> | null;
 };
 
 export type RuntimeManifest = {
@@ -108,6 +109,8 @@ export type RuntimeManifest = {
   queue: Record<string, unknown>;
   metrics: Record<string, unknown>;
   artifact_refs: string[];
+  agent1_cluster_council?: Record<string, unknown>;
+  flow_coverage?: Record<string, unknown>;
 };
 
 export type RuntimeReport = Record<string, unknown> | null;
@@ -115,11 +118,42 @@ export type RuntimeReport = Record<string, unknown> | null;
 export type RuntimeBundle = {
   manifest: RuntimeManifest | null;
   recentEvents: RuntimeEvent[];
+  debugIssues?: DebugIssue[];
+  signoff?: SignoffBundle | null;
   recoveryReport: RuntimeReport;
   invariantReport: RuntimeReport;
   replayReport: RuntimeReport;
+  flowCoverage: RuntimeReport;
   debugSummary: RuntimeReport;
   errors?: string[];
+};
+
+export type DebugIssue = {
+  type: "debug_issue";
+  schema_version?: string;
+  severity: string;
+  source: string;
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+  run_id?: string;
+  revision_id?: string;
+  artifact_ref?: string;
+  node_id?: string;
+  timestamp?: string;
+  flow_segment?: string;
+  source_layer?: string;
+  span_id?: string;
+  parent_span_id?: string;
+  group_id?: string;
+  model_call_id?: string;
+  gate?: string;
+  profile?: string;
+  case_id?: string;
+  expected_decision?: string;
+  actual_decision?: string;
+  false_pass?: boolean;
+  must_not_pass_violation?: boolean;
 };
 
 export type RuntimeCompact = {
@@ -128,6 +162,28 @@ export type RuntimeCompact = {
   debugSummary?: RuntimeReport;
   invariantReport?: RuntimeReport;
   replayReport?: RuntimeReport;
+  flowCoverage?: RuntimeReport;
+  debugIssues?: DebugIssue[];
+  signoff?: SignoffBundle | null;
+};
+
+export type SignoffBundle = {
+  schema_version?: string;
+  state?: "NOT_REACHED" | "PARTIAL" | "BLOCKED" | "FAILED" | "PASSED" | string;
+  stateReason?: string;
+  certificate?: Record<string, unknown> | null;
+  gateReport?: Record<string, unknown> | null;
+  evidenceManifest?: Record<string, unknown> | null;
+  runtimeManifest?: Record<string, unknown> | null;
+  handoff?: Record<string, unknown> | null;
+  benchmarkReport?: Record<string, unknown> | null;
+  falsePassReport?: Record<string, unknown> | null;
+  oracleDisagreements?: Record<string, unknown> | null;
+  benchmarkManifestHash?: Record<string, unknown> | null;
+  waivers?: Record<string, unknown> | null;
+  artifactRefs?: Record<string, string>;
+  artifactStatus?: Record<string, { path: string; exists: boolean }>;
+  errors?: unknown[];
 };
 
 export type CredentialRef = {

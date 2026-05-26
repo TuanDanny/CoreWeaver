@@ -28,6 +28,7 @@ from semiconductor_swarm.tracing import (  # noqa: E402
     sha256_text,
     trace_artifact_lineage,
     trace_completion,
+    trace_debug_issue,
     trace_event,
     trace_snapshot,
 )
@@ -333,35 +334,102 @@ def _emit_pause(payload: dict[str, Any], output_dir: Path) -> None:
             artifact=plan_path,
         )
         artifact(plan_path, output_dir)
-    elif action == "REQUIREMENT_CLARIFICATION":
+    elif action in {"REQUIREMENT_CLARIFICATION", "CONFLICT_REQUIRED", "NON_DESIGN_CONVERSATION"}:
+        is_conflict = action == "CONFLICT_REQUIRED"
+        is_non_design = action == "NON_DESIGN_CONVERSATION"
         stage("planning", "paused")
         agent_action(
             "agent1",
             "Agent 1 Intake Council",
             "planning",
-            "Requirement clarification needed",
+            "Non-design conversation answered" if is_non_design else "Conflict resolution needed" if is_conflict else "Requirement clarification needed",
             "paused",
-            "Agent 1 stopped before architecture planning because intake did not find a release-ready chip requirement.",
+            "Agent 1 answered a non-design request and stopped before chip planning."
+            if is_non_design
+            else "Agent 1 stopped before architecture planning because expert groups found conflicting chip requirements."
+            if is_conflict
+            else "Agent 1 stopped before architecture planning because intake did not find a release-ready chip requirement.",
             artifact=plan_path,
         )
         agent_discussion(
             "agent1",
             "user",
-            "Requirement clarification is ready. Fill the missing chip requirement fields, then submit as a change request.",
+            "Non-design response is ready. Submit a chip requirement when you want to start planning."
+            if is_non_design
+            else "Conflict resolution is ready. Resolve the blocking requirement conflict, then submit as a change request."
+            if is_conflict
+            else "Requirement clarification is ready. Fill the missing chip requirement fields, then submit as a change request.",
             "warning",
             artifact=plan_path,
         )
         artifact(plan_path, output_dir)
-    elif action == "HUMAN_REVIEW":
-        stage("rtl", "pass")
-        stage("formal", "pass")
+    elif action == "HITL_REQUIRED":
+        stage("planning", "paused")
         stage("hitl", "paused")
-        agent_action("agent2", "Agent 2 RTL Designer", "rtl", "RTL collateral ready", "pass", "Generated RTL package and routed Agent 2 reports/contracts.")
-        agent_action("agent5", "Agent 5 Formal Verifier", "formal", "Formal collateral ready", "pass", "Generated formal-first collateral for human review.")
-        agent_handoff("agent2", "agent5", "agent2_to_agent5", "pass", "RTL and formal hooks are available for formal verification.")
-        agent_handoff("agent2", "agent3", "agent2_to_agent3", "pass", "RTL compile order and DV hooks are available for DV generation.")
-        agent_discussion("agent5", "user", "Formal collateral is ready for review before DV execution.", "info")
+        agent_action(
+            "agent1",
+            "Agent 1 Architect",
+            "planning",
+            "Partial plan generated",
+            "paused",
+            "Agent 1 stopped before release; partial plan and recovery checklist are available.",
+            artifact=plan_path,
+        )
+        agent_discussion(
+            "agent1",
+            "user",
+            "Partial Agent 1 output is ready. Fix endpoint/model or provide follow-up, then resume before Agent 2 handoff.",
+            "warning",
+            artifact=plan_path,
+        )
+        artifact(plan_path, output_dir)
+        for extra_key in ("partial_evidence_path", "recovery_checklist_path"):
+            if payload.get(extra_key):
+                artifact(str(payload[extra_key]), output_dir)
+    elif action == "HUMAN_REVIEW":
+        review_artifacts = _human_review_artifacts(payload, output_dir)
+        missing_rtl = review_artifacts["missing_rtl"]
+        missing_formal = review_artifacts["missing_formal"]
+        rtl_ok = not missing_rtl
+        formal_ok = not missing_formal
+        stage("rtl", "pass" if rtl_ok else "failed")
+        stage("formal", "pass" if formal_ok else "failed")
+        stage("hitl", "paused")
+        agent_action(
+            "agent2",
+            "Agent 2 RTL Designer",
+            "rtl",
+            "RTL collateral ready",
+            "pass" if rtl_ok else "failed",
+            "Generated RTL package and routed Agent 2 reports/contracts." if rtl_ok else f"RTL collateral missing on disk: {len(missing_rtl)} file(s).",
+        )
+        agent_action(
+            "agent5",
+            "Agent 5 Formal Verifier",
+            "formal",
+            "Formal collateral ready",
+            "pass" if formal_ok else "failed",
+            "Generated formal-first collateral for human review." if formal_ok else f"Formal collateral missing on disk: {len(missing_formal)} file(s).",
+        )
+        handoff_status = "pass" if rtl_ok and formal_ok else "failed"
+        agent_handoff("agent2", "agent5", "agent2_to_agent5", handoff_status, "RTL and formal hooks are available for formal verification." if handoff_status == "pass" else "Human-review handoff blocked by missing disk artifacts.")
+        agent_handoff("agent2", "agent3", "agent2_to_agent3", "pass" if rtl_ok else "failed", "RTL compile order and DV hooks are available for DV generation." if rtl_ok else "Agent 3 handoff blocked by missing RTL artifacts.")
+        agent_discussion("agent5", "user", "Formal collateral is ready for review before DV execution." if handoff_status == "pass" else "Generated collateral state and disk artifacts disagree; inspect Debug Raw Issues.", "info" if handoff_status == "pass" else "error")
+        for artifact_path in review_artifacts["existing"]:
+            artifact(artifact_path, output_dir)
+        for missing in missing_rtl + missing_formal:
+            trace_debug_issue(
+                severity="error",
+                source="runner",
+                code="human_review_missing_artifact",
+                message="Human review payload references an artifact that is missing on disk.",
+                details=missing,
+                artifact_ref=str(missing.get("path") or ""),
+                node_id="APP.SWARM_RUNNER.HUMAN_REVIEW",
+                output_dir=output_dir,
+            )
     else:
+        stage("planning", "paused")
         stage("hitl", "paused")
         agent_action("agent1", "Human Review", "hitl", "Human input required", "paused", f"Paused for {action}.")
 
@@ -371,6 +439,7 @@ def _emit_pause(payload: dict[str, Any], output_dir: Path) -> None:
             "action_required": action,
             "message": payload.get("message", ""),
             "plan_path": plan_path,
+            "artifact_path": str(payload.get("artifact_path") or plan_path),
             "payload": payload,
         }
     )
@@ -383,10 +452,39 @@ def _emit_pause(payload: dict[str, Any], output_dir: Path) -> None:
         output_dir=output_dir,
     )
 
+def _human_review_artifacts(payload: dict[str, Any], output_dir: Path) -> dict[str, list[Any]]:
+    rtl_paths = _payload_artifact_paths(payload, "rtl", output_dir)
+    formal_paths = _payload_artifact_paths(payload, "formal", output_dir)
+    existing: list[str] = []
+    missing_rtl: list[dict[str, str]] = []
+    missing_formal: list[dict[str, str]] = []
+    for stage_name, path in rtl_paths:
+        if Path(path).is_file():
+            existing.append(path)
+        else:
+            missing_rtl.append({"stage": stage_name, "path": path})
+    for stage_name, path in formal_paths:
+        if Path(path).is_file():
+            existing.append(path)
+        else:
+            missing_formal.append({"stage": stage_name, "path": path})
+    return {"existing": existing, "missing_rtl": missing_rtl, "missing_formal": missing_formal}
+
+def _payload_artifact_paths(payload: dict[str, Any], group: str, output_dir: Path) -> list[tuple[str, str]]:
+    paths = [str(item) for item in payload.get(f"{group}_artifact_paths", []) if str(item)]
+    if paths:
+        return [(group, path) for path in paths]
+    filenames = [Path(str(name)).name for name in payload.get(f"{group}_files", []) if str(name)]
+    root = Path(str(payload.get(f"{group}_artifact_dir") or output_dir / group))
+    return [(group, str(root / filename)) for filename in filenames]
+
 
 def _emit_done(state: dict[str, Any], output_dir: Path) -> None:
     status = str(state.get("status", "UNKNOWN"))
     if status == "SIGNOFF_READY":
+        stage("rtl", "pass")
+        stage("formal", "pass")
+        stage("hitl", "pass")
         stage("dv", "pass")
         stage("physical", "pass")
         stage("signoff", "pass")

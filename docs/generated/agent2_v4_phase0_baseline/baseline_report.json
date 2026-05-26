@@ -1,7 +1,7 @@
 {
   "schema_version": "agent2.v4.phase0_baseline.v1",
   "timestamp_utc": "2026-05-19T14:27:17.624668+00:00",
-  "plan": "docs/exec-plans/active/AGENT_2_V4_INDUSTRIAL_RTL_SIGNOFF_PLAN.md",
+  "private_plan_ref": "local-only",
   "commands": [
     {
       "command": "python scripts/check_docs_health.py",

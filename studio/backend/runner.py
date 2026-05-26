@@ -44,6 +44,21 @@ CRITICAL_EVENT_TYPES = {
     "agent1_council_node",
     "agent1_council_edge",
     "agent1_council_artifact",
+    "agent1_topology_loaded",
+    "agent1_cluster_assignment",
+    "agent1_group_session_start",
+    "agent1_group_session_done",
+    "agent1_group_session_failed",
+    "agent1_group_retry",
+    "agent1_leaf_expert_start",
+    "agent1_leaf_expert_done",
+    "agent1_leaf_expert_failed",
+    "agent1_leaf_expert_retry",
+    "agent1_cross_group_challenge",
+    "agent1_principal_group_review",
+    "agent1_clarification_question",
+    "agent1_clarification_answer",
+    "agent1_council_mode_selected",
 }
 
 
@@ -76,13 +91,22 @@ class RunState:
         if kind == "process_start":
             self.pid = int(event.get("pid")) if str(event.get("pid", "")).isdigit() else self.pid
             self.status = "running"
+            self.pause = None
+            self.current_plan_path = None
         elif kind == "process_exit":
             if self.status == "paused" and event.get("returncode") in (0, None):
+                self.pid = None
+                return
+            if event.get("returncode") in (0, None) and self._has_paused_node():
+                self.status = "paused"
                 self.pid = None
                 return
             if self.status not in {"done", "failed", "stopped"}:
                 self.status = "stopped" if event.get("returncode") in (0, None) else "failed"
             if self.status in {"failed", "stopped"}:
+                if self.status == "failed":
+                    self.pause = None
+                    self.current_plan_path = None
                 self._mark_running_nodes_terminal(self.status)
             self.pid = None
         elif kind == "stage":
@@ -94,21 +118,34 @@ class RunState:
             if agent in self.agents:
                 self.agents[agent]["status"] = str(event.get("status", "info"))
                 self.agents[agent]["action"] = str(event.get("action", "activity"))
+            if str(event.get("status", "")).lower() == "paused":
+                self._apply_paused_agent_action(event)
         elif kind == "metric":
             self.metrics[str(event.get("name", "metric"))] = event.get("value")
         elif kind == "pause":
             self.status = "paused"
             self.pause = event
-            if event.get("plan_path"):
+            action = str(event.get("action_required") or "")
+            if action != "PLAN_REVIEW":
+                self.current_plan_path = None
+            elif event.get("plan_path"):
                 self.current_plan_path = str(event.get("plan_path"))
         elif kind == "done":
             self.status = "done"
             self.pause = None
+            self.current_plan_path = None
         elif kind == "error":
             self.status = "failed"
+            self.pause = None
+            self.current_plan_path = None
             self._mark_running_nodes_terminal("failed")
+        elif kind == "debug_issue" and str(event.get("severity") or "").lower() in {"error", "fatal"}:
+            self.status = "failed" if str(event.get("source") or "") in {"backend", "runtime"} else self.status
         elif kind == "watchdog_timeout":
             self.status = "stopped" if self.status == "stopping" else "failed"
+            if self.status == "failed":
+                self.pause = None
+                self.current_plan_path = None
             self._mark_running_nodes_terminal(self.status)
 
     def _mark_running_nodes_terminal(self, status: str) -> None:
@@ -119,7 +156,72 @@ class RunState:
             if str(agent_state.get("status")) in {"running", "starting"}:
                 self.agents[agent] = {**agent_state, "status": status, "action": status}
 
+    def _has_paused_node(self) -> bool:
+        return any(status == "paused" for status in self.stages.values()) or any(str(agent.get("status")) == "paused" for agent in self.agents.values())
+
+    def _apply_paused_agent_action(self, event: dict[str, Any]) -> None:
+        action_text = str(event.get("action") or "").lower()
+        summary_text = str(event.get("summary") or event.get("message") or "").lower()
+        artifact = str(event.get("artifact") or "")
+        combined_text = f"{action_text} {summary_text} {artifact.lower()}"
+        recognized = True
+        if any(token in combined_text for token in ("hitl_required", "hitl required", "partial plan", "recovery checklist", "stopped before release")):
+            action_required = "HITL_REQUIRED"
+        elif "non-design" in combined_text or "non design" in combined_text:
+            action_required = "NON_DESIGN_CONVERSATION"
+        elif "conflict" in combined_text:
+            action_required = "CONFLICT_REQUIRED"
+        elif "requirement clarification" in combined_text:
+            action_required = "REQUIREMENT_CLARIFICATION"
+        elif "architecture plan" in combined_text or "plan ready" in combined_text:
+            action_required = "PLAN_REVIEW"
+        elif "human" in combined_text:
+            action_required = "HUMAN_REVIEW"
+        else:
+            if not artifact:
+                return
+            recognized = False
+            action_required = "HUMAN_REVIEW"
+        self.status = "paused"
+        next_pause = {
+            "type": "pause",
+            "action_required": action_required,
+            "message": str(event.get("summary") or event.get("message") or event.get("action") or ""),
+            "plan_path": artifact,
+            "artifact_path": artifact,
+            "run_id": self.run_id,
+            "job_id": self.job_id,
+        }
+        current_action = str((self.pause or {}).get("action_required") or "")
+        current_artifact = str((self.pause or {}).get("artifact_path") or (self.pause or {}).get("plan_path") or "")
+        if (
+            not self.pause
+            or (artifact and not current_artifact)
+            or (recognized and current_action == "HUMAN_REVIEW" and action_required != "HUMAN_REVIEW")
+        ):
+            self.pause = next_pause
+        if action_required == "PLAN_REVIEW" and artifact:
+            self.current_plan_path = artifact
+        elif action_required != "PLAN_REVIEW":
+            self.current_plan_path = None
+
     def snapshot(self) -> dict[str, Any]:
+        pause = self.pause
+        current_plan_path = self.current_plan_path
+        stages = dict(self.stages)
+        agents = {agent: dict(value) for agent, value in self.agents.items()}
+        if self.status != "paused":
+            pause = None
+            current_plan_path = None
+        elif pause and str(pause.get("action_required") or "") != "PLAN_REVIEW":
+            current_plan_path = None
+        if self.status in {"stopped", "failed"}:
+            for stage, value in list(stages.items()):
+                if str(value) in {"running", "starting", "stopping", "paused"}:
+                    stages[stage] = self.status
+            for agent, value in list(agents.items()):
+                if str(value.get("status")) in {"running", "starting", "stopping", "paused"}:
+                    agents[agent] = {**value, "status": self.status, "action": self.status}
         return {
             "run_id": self.run_id,
             "status": self.status,
@@ -136,11 +238,11 @@ class RunState:
             "thread_id": self.thread_id,
             "start_policy": self.start_policy,
             "manifest_path": self.manifest_path,
-            "stages": self.stages,
-            "agents": self.agents,
+            "stages": stages,
+            "agents": agents,
             "metrics": self.metrics,
-            "pause": self.pause,
-            "current_plan_path": self.current_plan_path,
+            "pause": pause,
+            "current_plan_path": current_plan_path,
             "last_event_id": self.last_event_id,
         }
 
@@ -226,6 +328,17 @@ class RunnerManager:
                 self.state.attachment_manifest_path = str(attachment_paths.get("attachment_manifest") or "")
                 self.state.attachment_context_path = str(attachment_paths.get("attachment_context") or "")
             await self._publish_runtime_events(self.runtime_tracker.initialize_run(self.state.snapshot()))
+            await self._publish_runtime_events(
+                self.runtime_tracker.record_source_event(
+                    {
+                        "type": "start_preflight",
+                        "status": "pass",
+                        "message": "Start request accepted after backend preflight.",
+                        "attachment_ids": list(payload.get("attachment_ids") or payload.get("attachmentIds") or []),
+                    },
+                    self.state.snapshot(),
+                )
+            )
             trace_event(
                 TRACE_FILES["studio_flow"],
                 phase="backend",
@@ -268,6 +381,10 @@ class RunnerManager:
             self.state.api_key_ref = str(payload.get("api_key_ref") or payload.get("apiKeyRef") or self.state.api_key_ref or DEFAULT_CREDENTIAL_REF)
             self.state.job_id = str(payload.get("job_id") or self.state.job_id or "")
             self.state.checkpoint_db = str(payload.get("checkpoint_db") or payload.get("checkpointDb") or self.state.checkpoint_db)
+            resume_action = str(payload.get("resume_action") or payload.get("resumeAction") or "").upper()
+            pause_action = str((self.state.pause or {}).get("action_required") or "").upper()
+            if pause_action and resume_action in {"", "OK", "APPROVE", "APPROVED"}:
+                payload = {**payload, "resume_action": pause_action}
             payload = {**payload, "run_id": self.state.run_id, "thread_id": self.state.thread_id, "output_dir": self.state.output_dir}
             await self._launch("resume", payload)
             return self.state.snapshot()
@@ -542,7 +659,7 @@ class RunnerManager:
         if not tasks:
             return
         try:
-            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=1)
+            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
         except asyncio.TimeoutError:
             for task in tasks:
                 task.cancel()
@@ -568,6 +685,17 @@ class RunnerManager:
             clean = {**clean, "runtime_tracking_error": str(exc)}
         if self.event_sink is not None:
             await self.event_sink(clean)
+            if clean.get("runtime_tracking_error"):
+                await self.event_sink({
+                    "type": "debug_issue",
+                    "severity": "error",
+                    "source": "runtime",
+                    "code": "runtime_tracker_failed",
+                    "message": f"Runtime tracker failed: {clean.get('runtime_tracking_error')}",
+                    "details": {"source_event_type": clean.get("type"), "error": clean.get("runtime_tracking_error")},
+                    "run_id": event_run_id,
+                    "node_id": "RUNTIME.TRACKER",
+                })
             await self._publish_runtime_events(runtime_events)
 
     async def _publish_runtime_events(self, events: list[dict[str, Any]]) -> None:

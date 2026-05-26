@@ -1,0 +1,45 @@
+{
+  "schema_version": "agent1.topology_manifest.v1",
+  "topology_version": "v7.1-default",
+  "principal": {
+    "expert_id": "P01",
+    "title": "Principal Architect",
+    "domain": "principal",
+    "mission": "Synthesize manager decisions, resolve conflicts, and select final architecture candidate."
+  },
+  "leaf_experts": [
+    {"expert_id": "L01", "title": "Requirement Intake Expert", "domain": "requirement", "mission": "Extract explicit requirements, constraints, assumptions, and unknowns.", "tags": ["requirement", "intake", "ambiguity"]},
+    {"expert_id": "L02", "title": "Domain Classifier Expert", "domain": "requirement", "mission": "Classify chip domain, workload, SoC class, and ambiguity level.", "tags": ["domain", "soc", "classification"]},
+    {"expert_id": "L03", "title": "Architecture Option Expert", "domain": "requirement", "mission": "Generate feasible architecture options without rewriting explicit requirements.", "tags": ["architecture", "tradeoff", "option"]},
+    {"expert_id": "L04", "title": "CPU ISA Expert", "domain": "cpu", "mission": "Select CPU width, ISA profile, privilege assumptions, and extension constraints.", "tags": ["cpu", "isa", "width"]},
+    {"expert_id": "L05", "title": "CPU Pipeline Expert", "domain": "cpu", "mission": "Select pipeline depth, hazard assumptions, debug hooks, and implementation risks.", "tags": ["cpu", "pipeline", "hazard"]},
+    {"expert_id": "L06", "title": "Reset Boot Trap Expert", "domain": "cpu", "mission": "Define reset, boot, trap, interrupt-entry, and ROM/RAM expectations.", "tags": ["reset", "boot", "interrupt", "trap"]},
+    {"expert_id": "L07", "title": "Memory Map Expert", "domain": "memory", "mission": "Build address map intent, decode boundaries, and overlap risks.", "tags": ["memory", "address", "map"]},
+    {"expert_id": "L08", "title": "Memory Hierarchy Expert", "domain": "memory", "mission": "Define memory hierarchy, SRAM/ROM/cache assumptions, and coherency scope.", "tags": ["memory", "cache", "sram", "rom"]},
+    {"expert_id": "L09", "title": "Protocol AHB/APB/AXI Expert", "domain": "protocol", "mission": "Select primary protocol and preserve requested bus semantics.", "tags": ["protocol", "bus", "apb", "ahb", "axi"]},
+    {"expert_id": "L10", "title": "Bridge Adapter Expert", "domain": "protocol", "mission": "Define required protocol bridge, boundary, and capability-gap policy.", "tags": ["bridge", "adapter", "protocol"]},
+    {"expert_id": "L11", "title": "Interconnect QoS Expert", "domain": "protocol", "mission": "Define interconnect topology, arbitration, QoS, and backpressure assumptions.", "tags": ["interconnect", "qos", "arbitration"]},
+    {"expert_id": "L12", "title": "Peripheral SPI Expert", "domain": "peripheral", "mission": "Plan SPI external peripheral behavior, registers, interrupts, and DV hooks.", "tags": ["spi", "peripheral", "register", "interrupt"]},
+    {"expert_id": "L13", "title": "Peripheral UART/I2C/GPIO Expert", "domain": "peripheral", "mission": "Plan UART/I2C/GPIO behavior, registers, interrupts, and DV hooks.", "tags": ["uart", "i2c", "gpio", "peripheral", "interrupt"]},
+    {"expert_id": "L14", "title": "Register/SystemRDL Expert", "domain": "register", "mission": "Normalize register map, access policy, reset values, and SystemRDL needs.", "tags": ["register", "systemrdl", "memory_map"]},
+    {"expert_id": "L15", "title": "Firmware ABI Expert", "domain": "firmware", "mission": "Define firmware-facing ABI, headers, driver stubs, and interrupt flow.", "tags": ["firmware", "abi", "header", "driver"]},
+    {"expert_id": "L16", "title": "DV Strategy Expert", "domain": "verification", "mission": "Define DV plan, scoreboards, coverage bins, and negative cases.", "tags": ["dv", "cocotb", "coverage", "scoreboard"]},
+    {"expert_id": "L17", "title": "Formal Property Expert", "domain": "formal", "mission": "Define formal-first properties, assumptions, and proof obligations.", "tags": ["formal", "sva", "property", "proof"]},
+    {"expert_id": "L18", "title": "Physical Clock/Timing Expert", "domain": "physical", "mission": "Define clocks, resets, timing constraints, and implementation risks.", "tags": ["clock", "timing", "physical", "fpga"]},
+    {"expert_id": "L19", "title": "Power Intent Expert", "domain": "physical", "mission": "Define power assumptions, clock gating, UPF needs, and unknowns.", "tags": ["power", "upf", "clock_gating"]},
+    {"expert_id": "L20", "title": "DFT/Testability Expert", "domain": "physical", "mission": "Define scan/test hooks, observability, controllability, and exclusions.", "tags": ["dft", "test", "scan"]},
+    {"expert_id": "L21", "title": "Safety/Security Expert", "domain": "safety", "mission": "Define privilege, sensitive registers, misuse cases, and safety/security risks.", "tags": ["safety", "security", "privilege"]},
+    {"expert_id": "L22", "title": "IP Reuse/Cost Expert", "domain": "capability", "mission": "Assess reuse, build cost, and unsupported feature risk.", "tags": ["ip", "reuse", "cost"]},
+    {"expert_id": "L23", "title": "Downstream Agent Contract Expert", "domain": "capability", "mission": "Define Agent2/3/4/5 handoff contract and capability gaps.", "tags": ["handoff", "agent2", "contract"]},
+    {"expert_id": "L24", "title": "Plan Readability/Diagram Expert", "domain": "planning", "mission": "Ensure final plan is readable, diagrammable, and acceptance-driven.", "tags": ["plan", "diagram", "readability"]}
+  ],
+  "groups": [
+    {"manager_id": "M01", "title": "Requirement/Product Manager", "domain": "requirement_product", "leaf_expert_ids": ["L01", "L02", "L03"], "tags": ["requirement", "product", "ambiguity"], "guest_expert_eligible": true},
+    {"manager_id": "M02", "title": "CPU/Memory Manager", "domain": "cpu_memory", "leaf_expert_ids": ["L04", "L05", "L06", "L07", "L08"], "tags": ["cpu", "memory", "boot"], "guest_expert_eligible": true},
+    {"manager_id": "M03", "title": "Protocol/Interconnect Manager", "domain": "protocol_interconnect", "leaf_expert_ids": ["L09", "L10", "L11"], "tags": ["protocol", "bus", "interconnect"], "guest_expert_eligible": true},
+    {"manager_id": "M04", "title": "Peripheral/Register/Firmware Manager", "domain": "peripheral_register_firmware", "leaf_expert_ids": ["L12", "L13", "L14", "L15"], "tags": ["peripheral", "register", "firmware"], "guest_expert_eligible": true},
+    {"manager_id": "M05", "title": "Verification/Formal Manager", "domain": "verification_formal", "leaf_expert_ids": ["L16", "L17"], "tags": ["dv", "formal", "verification"], "guest_expert_eligible": true},
+    {"manager_id": "M06", "title": "Physical/Power/DFT Manager", "domain": "physical_power_dft", "leaf_expert_ids": ["L18", "L19", "L20", "L21"], "tags": ["physical", "power", "dft", "security"], "guest_expert_eligible": true},
+    {"manager_id": "M07", "title": "Downstream Contract/Capability Manager", "domain": "downstream_contract_capability", "leaf_expert_ids": ["L22", "L23", "L24"], "tags": ["handoff", "capability", "plan"], "guest_expert_eligible": true}
+  ]
+}

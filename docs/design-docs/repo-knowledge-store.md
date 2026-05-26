@@ -16,10 +16,10 @@ Apply Harness Engineering pattern: give agents a map, not a 1,000-page instructi
 ## Structure
 - `AGENTS.md`: short map.
 - `ARCHITECTURE.md`: system overview.
-- `PLANS.md`: plan index.
+- `_private/plans/`: local-only implementation plan index and idea docs.
 - `docs/design-docs/`: stable invariants.
 - `docs/product-specs/`: agent/tool contracts.
-- `docs/exec-plans/`: active/completed/deferred plans.
+- Public docs exclude implementation plans that expose roadmap or internal strategy.
 - `docs/prompts/`: prompt source index.
 - `docs/references/`: external/non-binding references.
 - `docs/governance/`: maintenance and review policy.

@@ -33,6 +33,8 @@ def call_agent2_codex(prompt: str, *, purpose: str = "rtl_review", config: dict[
         "messages": [{"role": "user", "content": prompt}],
         "temperature": cfg["temperature"],
     }
+    if cfg.get("max_tokens") is not None:
+        payload["max_tokens"] = int(cfg["max_tokens"])
     data = json.dumps(payload).encode("utf-8")
     headers = build_openai_compatible_headers(cfg)
     req = urllib.request.Request(f"{base_url}/chat/completions", data=data, headers=headers, method="POST")

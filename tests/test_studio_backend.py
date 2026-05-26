@@ -18,7 +18,10 @@ import studio.backend.server as server_module
 from studio.backend.server import create_app
 from studio.backend.run_manifest import MANIFEST_NAME
 from studio.backend.runtime_tracking import (
+    build_runtime_flow_coverage_report,
     build_runtime_invariant_report,
+    load_runtime_bundle,
+    read_debug_issues,
     RuntimeTracker,
 )
 import app.swarm_runner as swarm_runner
@@ -179,7 +182,7 @@ def test_connection_uses_chat_completions_not_models(monkeypatch):
     result = asyncio.run(server_module._probe_openai_compatible_endpoint("http://local.test/v1", "model-a", "secret-key"))
 
     assert result == {"ok": True, "message": "Connection OK"}
-    assert seen["timeout"] == 5.0
+    assert seen["timeout"] == server_module.SETTINGS_PROBE_TIMEOUT_S
     assert seen["url"] == "http://local.test/v1/chat/completions"
     assert seen["authorization"] == "Bearer secret-key"
     assert seen["payload"]["max_tokens"] == 1
@@ -746,6 +749,404 @@ def test_runtime_invariant_fails_tool_done_without_start(tmp_path):
     assert report["ok"] is False
     assert any(item["code"] == "done_without_start" and item["kind"] == "tool_call" for item in report["failures"])
 
+
+def test_runtime_invariant_warns_model_done_without_start(tmp_path):
+    output_dir = tmp_path / "outputs" / "model_done_no_start"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-model-no-start", "status": "paused", "project_name": "strict", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+    tracker._write_events(
+        state,
+        [
+            tracker._build_event(
+                state=state,
+                event_type="model_call_done",
+                status="passed",
+                message="model done",
+                agent="agent1",
+                phase="planning",
+                node_id="AGENT1.MODEL_CALL",
+                correlation_id="model:missing",
+                source={"type": "agent_action"},
+            )
+        ],
+    )
+
+    report = build_runtime_invariant_report(output_dir)
+
+    assert report["ok"] is True
+    assert not any(item["kind"] == "model_call" for item in report["failures"])
+    assert any(item["code"] == "done_without_start" and item["kind"] == "model_call" for item in report["warnings"])
+
+
+def test_runtime_invariant_findings_are_written_to_debug_issues(tmp_path):
+    output_dir = tmp_path / "outputs" / "strict_tool_debug"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-strict-debug", "status": "done", "project_name": "strict", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+    tracker._write_events(
+        state,
+        [
+            tracker._build_event(
+                state=state,
+                event_type="tool_call_done",
+                status="passed",
+                message="tool done",
+                agent="agent1",
+                phase="planning",
+                node_id="TOOL.TEST",
+                correlation_id="tool:missing",
+                source={"type": "test"},
+            )
+        ],
+    )
+
+    issues = read_debug_issues(output_dir)
+
+    assert any(issue["source"] == "runtime" and issue["code"] == "done_without_start" for issue in issues)
+    assert all("secret-key" not in json.dumps(issue) for issue in issues)
+
+
+def test_runtime_tracker_pairs_concurrent_model_calls_fifo(tmp_path):
+    output_dir = tmp_path / "outputs" / "model_fifo"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-model-fifo", "status": "paused", "project_name": "model", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+    for _ in range(3):
+        tracker.record_source_event(
+            {"type": "agent_action", "agent": "agent1", "action": "Codex request started", "summary": "Calling cx/gpt-5.5 at http://localhost:20128/v1", "status": "running"},
+            state,
+        )
+    for _ in range(3):
+        tracker.record_source_event(
+            {"type": "agent_action", "agent": "agent1", "action": "Codex response received", "summary": "Model cx/gpt-5.5 returned architecture evidence in 1.0s", "status": "pass", "metric": {"latency_s": 1.0}},
+            state,
+        )
+
+    report = build_runtime_invariant_report(output_dir)
+
+    assert not any(item.get("kind") == "model_call" for item in report["failures"])
+    assert not any(item.get("kind") == "model_call" for item in report["warnings"])
+
+
+def test_agent1_cluster_manifest_records_group_session_metrics(tmp_path):
+    output_dir = tmp_path / "outputs" / "cluster_manifest"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-cluster", "status": "running", "project_name": "cluster", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+    tracker.record_source_event({"type": "agent1_council_mode_selected", "mode": "group_session"}, state)
+    tracker.record_source_event({"type": "agent1_topology_loaded", "topology_hash": "topo-1"}, state)
+    tracker.record_source_event({"type": "agent1_cluster_assignment", "cluster_assignment_hash": "assign-1", "group_id": "M02", "leaf_expert_ids": ["L04", "L05"]}, state)
+    tracker.record_source_event({"type": "agent1_group_session_start", "span_id": "span-m02", "group_id": "M02", "manager_id": "M02", "leaf_expert_ids": ["L04", "L05"], "model_call_id": "model-m02"}, state)
+    tracker.record_source_event({"type": "agent1_group_session_done", "span_id": "span-m02", "group_id": "M02", "manager_id": "M02", "latency_s": 1.25, "total_tokens": 321, "estimated_cost_usd": 0.0123}, state)
+
+    manifest = json.loads((output_dir / "reports" / "traces" / "runtime_session_manifest.json").read_text(encoding="utf-8"))
+    cluster = manifest["agent1_cluster_council"]
+
+    assert cluster["mode"] == "group_session"
+    assert cluster["topology_hash"] == "topo-1"
+    assert cluster["cluster_assignment_hash"] == "assign-1"
+    assert cluster["group_sessions"]["span-m02"]["status"] == "passed"
+    assert cluster["group_sessions"]["span-m02"]["metrics"]["total_tokens"] == 321
+
+def test_agent1_cluster_invariant_flags_group_start_without_done(tmp_path):
+    output_dir = tmp_path / "outputs" / "cluster_missing_done"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-cluster-missing", "status": "done", "project_name": "cluster", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+    tracker.record_source_event({"type": "agent1_group_session_start", "span_id": "span-m03", "group_id": "M03"}, state)
+
+    report = build_runtime_invariant_report(output_dir)
+    issues = read_debug_issues(output_dir)
+
+    assert any(item["code"] == "agent1_group_start_without_done" for item in report["failures"])
+    assert any(issue["code"] == "agent1_group_start_without_done" for issue in issues)
+
+def test_agent1_cluster_invariant_flags_principal_review_before_group_done(tmp_path):
+    output_dir = tmp_path / "outputs" / "cluster_review_early"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-cluster-early", "status": "running", "project_name": "cluster", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+    tracker.record_source_event({"type": "agent1_group_session_start", "span_id": "span-m04", "group_id": "M04"}, state)
+    tracker.record_source_event({"type": "agent1_principal_group_review", "span_id": "span-p01", "parent_span_id": "span-m04"}, state)
+
+    report = build_runtime_invariant_report(output_dir)
+
+    assert any(item["code"] == "agent1_principal_review_before_groups_done" for item in report["failures"])
+
+def test_agent1_cluster_invariant_flags_bad_retry_group(tmp_path):
+    output_dir = tmp_path / "outputs" / "cluster_bad_retry"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-cluster-retry", "status": "running", "project_name": "cluster", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+    tracker.record_source_event({"type": "agent1_cluster_assignment", "group_id": "M02"}, state)
+    tracker.record_source_event({"type": "agent1_group_retry", "target_group_id": "M99"}, state)
+
+    report = build_runtime_invariant_report(output_dir)
+
+    assert any(item["code"] == "agent1_retry_target_group_unknown" for item in report["failures"])
+
+def test_agent1_cluster_invariant_accepts_skipped_retry_group_list(tmp_path):
+    output_dir = tmp_path / "outputs" / "cluster_skipped_retry_list"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-cluster-retry-skip", "status": "paused", "project_name": "cluster", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+    tracker.record_source_event({"type": "agent1_cluster_assignment", "group_id": "M02"}, state)
+    tracker.record_source_event({"type": "agent1_cluster_assignment", "group_id": "M03"}, state)
+    tracker.record_source_event({"type": "agent1_group_retry", "status": "skipped", "target_group_ids": ["M02", "M03"]}, state)
+
+    report = build_runtime_invariant_report(output_dir)
+
+    assert not any(item["code"] == "agent1_retry_target_group_unknown" for item in report["failures"])
+
+def test_agent1_cluster_invariant_blocks_agent2_with_unresolved_challenge(tmp_path):
+    output_dir = tmp_path / "outputs" / "cluster_unresolved_challenge"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-cluster-challenge", "status": "running", "project_name": "cluster", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+    tracker.record_source_event({"type": "agent1_cross_group_challenge", "challenge_id": "c1", "owner_group_id": "M04", "status": "open"}, state)
+    tracker.record_source_event({"type": "agent_handoff", "from_agent": "agent1", "to_agent": "agent2", "contract": "agent1_to_agent2", "status": "pass"}, state)
+
+    report = build_runtime_invariant_report(output_dir)
+
+    assert any(item["code"] == "agent2_handoff_with_unresolved_agent1_challenge" for item in report["failures"])
+
+def test_agent1_cluster_invariant_flags_clarification_answer_unknown_question(tmp_path):
+    output_dir = tmp_path / "outputs" / "cluster_bad_clarification"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-cluster-clarify", "status": "paused", "project_name": "cluster", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+    tracker.record_source_event({"type": "agent1_clarification_answer", "question_id": "missing-q", "answer_id": "a1"}, state)
+
+    report = build_runtime_invariant_report(output_dir)
+
+    assert any(item["code"] == "agent1_clarification_answer_unknown_question" for item in report["failures"])
+
+def test_runtime_flow_coverage_tracks_start_preflight_process_agent1_agent2(tmp_path):
+    output_dir = tmp_path / "outputs" / "flow_ok"
+    plan_path = output_dir / "reports" / "architecture_plan.md"
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text("# Plan\n", encoding="utf-8")
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-flow-ok", "status": "running", "project_name": "flow", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+    tracker.record_source_event({"type": "start_preflight", "status": "pass", "attachment_ids": []}, state)
+    tracker.record_source_event({"type": "process_start", "pid": 1234}, state)
+    tracker.record_source_event({"type": "agent_action", "agent": "agent1", "action": "Extract explicit requirements", "summary": "Agent1 intake started", "status": "running"}, state)
+    tracker.record_source_event({"type": "agent1_council_mode_selected", "mode": "group_session"}, state)
+    tracker.record_source_event({"type": "agent1_topology_loaded", "topology_hash": "topo-flow"}, state)
+    tracker.record_source_event({"type": "agent1_cluster_assignment", "cluster_assignment_hash": "assign-flow", "group_id": "M01"}, state)
+    tracker.record_source_event({"type": "agent1_group_session_start", "span_id": "span-m01", "group_id": "M01"}, state)
+    tracker.record_source_event({"type": "agent1_group_session_done", "span_id": "span-m01", "group_id": "M01"}, state)
+    tracker.record_source_event({"type": "artifact", "agent": "agent1", "path": str(plan_path), "message": "architecture_plan.md"}, state)
+    tracker.record_source_event({"type": "agent_handoff", "from_agent": "agent1", "to_agent": "agent2", "contract": "agent1_to_agent2", "status": "pass", "artifact_refs": [str(plan_path)]}, state)
+    tracker.record_source_event({"type": "agent_action", "agent": "agent2", "action": "Generating APB/RTL collateral", "summary": "Agent2 RTL started", "status": "running"}, state)
+
+    report = build_runtime_flow_coverage_report(output_dir)
+    segments = report["segments"]
+
+    assert segments["credential_preflight"]["status"] == "completed"
+    assert segments["runner_process"]["status"] == "started"
+    assert segments["agent1_cluster"]["status"] == "completed"
+    assert segments["agent1_artifacts"]["status"] == "completed"
+    assert segments["agent2_gate"]["status"] == "completed"
+    assert segments["agent2_rtl"]["status"] == "started"
+    assert report["canonical_span_model"]["run_span_id"] == "run:run-flow-ok"
+    assert report["canonical_span_model"]["process_span_id"].startswith("job:")
+
+def test_runtime_flow_coverage_skips_cluster_segments_for_agent1_simple_fast_path(tmp_path):
+    output_dir = tmp_path / "outputs" / "flow_fast_path"
+    plan_path = output_dir / "reports" / "architecture_plan.md"
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text("# Plan\n", encoding="utf-8")
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-flow-fast", "status": "done", "project_name": "flow", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+    tracker.record_source_event({"type": "start_preflight", "status": "pass", "attachment_ids": []}, state)
+    tracker.record_source_event({"type": "process_start", "pid": 1234}, state)
+    tracker.record_source_event(
+        {
+            "type": "trace_event",
+            "event_type": "node_completed",
+            "status": "pass",
+            "agent": "agent1",
+            "node_id": "AGENT1.A1_00_SIMPLE_DESIGN_FAST_PATH",
+            "summary": "classification=DESIGN_READY; peripherals=uart,spi,i2c,gpio,timer",
+        },
+        state,
+    )
+    tracker.record_source_event({"type": "artifact", "agent": "agent1", "path": str(plan_path), "message": "architecture_plan.md"}, state)
+    tracker.record_source_event({"type": "agent_handoff", "from_agent": "agent1", "to_agent": "agent2", "contract": "agent1_to_agent2", "status": "pass", "artifact_refs": [str(plan_path)]}, state)
+    tracker.record_source_event({"type": "agent_action", "agent": "agent2", "action": "Generating APB/RTL collateral", "summary": "Agent2 RTL started", "status": "pass"}, state)
+    tracker.record_source_event({"type": "process_exit", "returncode": 0}, state)
+    trace_dir = output_dir / "reports" / "traces"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    (trace_dir / "debug_issues.jsonl").write_text(
+        json.dumps({"code": "flow_missing_required_span", "flow_segment": "agent1_cluster", "severity": "warning"}) + "\n",
+        encoding="utf-8",
+    )
+
+    report = build_runtime_flow_coverage_report(output_dir)
+    invariant = build_runtime_invariant_report(output_dir)
+
+    assert report["segments"]["agent1_cluster"]["status"] == "skipped"
+    assert report["segments"]["agent1_guardrail"]["status"] == "skipped"
+    assert report["segments"]["agent1_cluster"]["last_issue_code"] == ""
+    assert not any(item.get("flow_segment") in {"agent1_cluster", "agent1_guardrail"} for item in invariant["warnings"])
+
+def test_runtime_flow_coverage_flags_missing_span(tmp_path):
+    output_dir = tmp_path / "outputs" / "flow_missing"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-flow-missing", "status": "done", "project_name": "flow", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+
+    report = build_runtime_invariant_report(output_dir)
+    issues = read_debug_issues(output_dir)
+
+    assert any(item["code"] == "flow_missing_required_span" and item["flow_segment"] == "runner_process" for item in report["failures"])
+    assert any(issue["code"] == "flow_missing_required_span" and issue.get("flow_segment") == "runner_process" for issue in issues)
+
+def test_runtime_flow_coverage_blocks_agent2_when_agent1_artifact_stale(tmp_path):
+    output_dir = tmp_path / "outputs" / "flow_stale_agent1"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-flow-stale", "status": "running", "project_name": "flow", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+    tracker.record_source_event({"type": "start_preflight", "status": "pass"}, state)
+    tracker.record_source_event({"type": "process_start", "pid": 44}, state)
+    tracker.record_source_event({"type": "agent_handoff", "from_agent": "agent1", "to_agent": "agent2", "contract": "agent1_to_agent2", "status": "pass"}, state)
+
+    report = build_runtime_invariant_report(output_dir)
+
+    assert any(item["code"] == "flow_agent2_handoff_with_stale_agent1_artifact" for item in report["failures"])
+
+def test_runtime_flow_coverage_detects_attachment_payload_mismatch(tmp_path):
+    output_dir = tmp_path / "outputs" / "flow_attachment_mismatch"
+    inputs_dir = output_dir / "inputs"
+    inputs_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = inputs_dir / "attachments_manifest.json"
+    manifest_path.write_text(json.dumps({"attachments": [{"id": "committed-b"}]}), encoding="utf-8")
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-flow-attach", "status": "running", "project_name": "flow", "output_dir": str(output_dir), "attachment_manifest_path": str(manifest_path)}
+    tracker.initialize_run(state)
+    tracker.record_source_event({"type": "start_preflight", "status": "pass", "attachment_ids": ["requested-a"]}, state)
+
+    report = build_runtime_invariant_report(output_dir)
+
+    assert any(item["code"] == "flow_attachment_payload_mismatch" for item in report["failures"])
+
+def test_runtime_flow_coverage_detects_non_monotonic_websocket_replay(tmp_path):
+    output_dir = tmp_path / "outputs" / "flow_ws"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-flow-ws", "status": "running", "project_name": "flow", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+    tracker.record_source_event({"type": "websocket_replay", "status": "pass", "event_id": 10, "message": "replay 10"}, state)
+    tracker.record_source_event({"type": "websocket_replay", "status": "pass", "event_id": 7, "message": "replay 7"}, state)
+
+    report = build_runtime_invariant_report(output_dir)
+
+    assert any(item["code"] == "flow_non_monotonic_websocket_replay" for item in report["failures"])
+
+def test_runtime_flow_coverage_report_never_contains_secret(tmp_path):
+    output_dir = tmp_path / "outputs" / "flow_secret"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-flow-secret", "status": "running", "project_name": "flow", "output_dir": str(output_dir), "apiKeyRef": "sk-secret123456789"}
+    tracker.initialize_run(state)
+    tracker.record_source_event({"type": "start_preflight", "status": "pass", "message": "Authorization: Bearer sk-secret123456789"}, state)
+
+    report = build_runtime_flow_coverage_report(output_dir)
+    text = json.dumps(report)
+
+    assert "sk-secret123456789" not in text
+    assert "Authorization" not in text
+
+def test_runtime_flow_coverage_detects_missing_artifact_file(tmp_path):
+    output_dir = tmp_path / "outputs" / "flow_missing_artifact"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-flow-artifact", "status": "running", "project_name": "flow", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+    tracker.record_source_event({"type": "artifact", "agent": "agent1", "path": str(output_dir / "reports" / "missing_plan.md"), "message": "missing artifact"}, state)
+
+    report = build_runtime_invariant_report(output_dir)
+
+    assert any(item["code"] == "flow_missing_artifact_file" for item in report["failures"])
+
+def test_runtime_bundle_hydrates_agent1_signoff_artifacts(tmp_path):
+    output_dir = tmp_path / "outputs" / "signoff_bundle"
+    agent1 = output_dir / "reports" / "agent1"
+    agent1.mkdir(parents=True)
+    certificate = {
+        "schema_version": "agent1_final_signoff_certificate/v1",
+        "decision": "PASS",
+        "handoff_allowed": True,
+        "profile": "strict",
+        "score": 100.0,
+        "finding_summary": {"blocking_count": 0, "warning_count": 0, "blocking_codes": []},
+        "waiver_summary": {"applied": [], "rejected": []},
+        "benchmark_summary": {"case_count": 110, "false_pass_count": 0, "must_not_pass_violation_count": 0},
+    }
+    gate_report = {
+        "schema_version": "agent1_signoff_gate_report/v1",
+        "passed": True,
+        "gate_results": {"G00": {"status": "PASS", "finding_codes": []}},
+        "findings": [],
+    }
+    benchmark = {"schema_version": "agent1_signoff_benchmark_report/v1", "case_count": 110, "false_pass_count": 0}
+    (agent1 / "agent1_final_signoff_certificate.json").write_text(json.dumps(certificate), encoding="utf-8")
+    (agent1 / "agent1_signoff_gate_report.json").write_text(json.dumps(gate_report), encoding="utf-8")
+    (agent1 / "agent1_signoff_benchmark_report.json").write_text(json.dumps(benchmark), encoding="utf-8")
+    (agent1 / "agent1_signoff_false_pass_report.json").write_text(json.dumps({"items": []}), encoding="utf-8")
+
+    bundle = load_runtime_bundle(output_dir)
+
+    assert bundle["signoff"]["certificate"]["decision"] == "PASS"
+    assert bundle["signoff"]["gateReport"]["gate_results"]["G00"]["status"] == "PASS"
+    assert bundle["signoff"]["benchmarkReport"]["case_count"] == 110
+    assert bundle["signoff"]["artifactStatus"]["certificate"]["exists"] is True
+    assert bundle["signoff"]["state"] == "PASSED"
+    assert "api_key" not in json.dumps(bundle["signoff"]).lower()
+
+def test_runtime_bundle_marks_signoff_not_reached_without_certificate(tmp_path):
+    output_dir = tmp_path / "outputs" / "not_reached"
+    (output_dir / "reports" / "agent1").mkdir(parents=True)
+
+    bundle = load_runtime_bundle(output_dir)
+
+    assert bundle["signoff"]["state"] == "NOT_REACHED"
+    assert bundle["signoff"]["certificate"] is None
+
+def test_runtime_bundle_marks_partial_before_signoff(tmp_path):
+    output_dir = tmp_path / "outputs" / "partial"
+    agent1 = output_dir / "reports" / "agent1"
+    agent1.mkdir(parents=True)
+    (agent1 / "agent1_partial_evidence.json").write_text(json.dumps({"schema_version": "agent1.partial_evidence.v1"}), encoding="utf-8")
+
+    bundle = load_runtime_bundle(output_dir)
+
+    assert bundle["signoff"]["state"] == "PARTIAL"
+
+def test_failed_agent_action_is_not_recorded_as_model_call(tmp_path):
+    output_dir = tmp_path / "outputs" / "failed_agent_action"
+    tracker = RuntimeTracker(root=tmp_path)
+    state = {"run_id": "run-agent-action", "status": "paused", "project_name": "agent", "output_dir": str(output_dir)}
+    tracker.initialize_run(state)
+
+    tracker.record_source_event(
+        {
+            "type": "agent_action",
+            "agent": "agent1",
+            "action": "L04 CPU/ISA Expert completed",
+            "summary": "No CPU ISA selected. DV register model fields remain in the peripheral contract.",
+            "status": "fail",
+        },
+        state,
+    )
+
+    events = (output_dir / "reports" / "traces" / "runtime_events.jsonl").read_text(encoding="utf-8")
+
+    assert "model_call_done" not in events
+    assert "AGENT1.L04_CPU_ISA_EXPERT" in events
+
+
 def test_stop_during_intake_kills_process_tree_without_late_agent2_events(tmp_path):
     events = []
 
@@ -839,6 +1240,76 @@ def test_process_exit_nonzero_preserves_failed_state():
 
     assert manager.state.status == "failed"
 
+def test_process_exit_nonzero_clears_stale_plan_review_pause():
+    manager = RunnerManager(command_builder=_fake_quick_runner_command)
+    manager.state.status = "paused"
+    manager.state.pause = {"action_required": "PLAN_REVIEW"}
+    manager.state.current_plan_path = "reports/architecture_plan.md"
+
+    manager.state.apply_event({"type": "process_exit", "returncode": 1})
+
+    assert manager.state.status == "failed"
+    assert manager.state.pause is None
+    assert manager.state.current_plan_path is None
+
+def test_snapshot_sanitizes_failed_stale_plan_review_pause():
+    manager = RunnerManager(command_builder=_fake_quick_runner_command)
+    manager.state.status = "failed"
+    manager.state.pause = {"action_required": "PLAN_REVIEW"}
+    manager.state.current_plan_path = "reports/architecture_plan.md"
+
+    snapshot = manager.state.snapshot()
+
+    assert snapshot["pause"] is None
+    assert snapshot["current_plan_path"] is None
+
+def test_snapshot_sanitizes_running_stale_plan_review_pause():
+    manager = RunnerManager(command_builder=_fake_quick_runner_command)
+    manager.state.status = "running"
+    manager.state.pause = {"action_required": "PLAN_REVIEW"}
+    manager.state.current_plan_path = "reports/architecture_plan.md"
+
+    snapshot = manager.state.snapshot()
+
+    assert snapshot["pause"] is None
+    assert snapshot["current_plan_path"] is None
+
+def test_snapshot_sanitizes_stopped_paused_nodes():
+    manager = RunnerManager(command_builder=_fake_quick_runner_command)
+    manager.state.status = "stopped"
+    manager.state.pause = {"action_required": "PLAN_REVIEW"}
+    manager.state.current_plan_path = "reports/architecture_plan.md"
+    manager.state.stages["planning"] = "paused"
+    manager.state.agents["agent1"]["status"] = "paused"
+
+    snapshot = manager.state.snapshot()
+
+    assert snapshot["pause"] is None
+    assert snapshot["current_plan_path"] is None
+    assert snapshot["stages"]["planning"] == "stopped"
+    assert snapshot["agents"]["agent1"]["status"] == "stopped"
+
+def test_process_start_clears_stale_plan_review_pause():
+    manager = RunnerManager(command_builder=_fake_quick_runner_command)
+    manager.state.status = "paused"
+    manager.state.pause = {"action_required": "PLAN_REVIEW"}
+    manager.state.current_plan_path = "reports/architecture_plan.md"
+
+    manager.state.apply_event({"type": "process_start", "pid": 1234})
+
+    assert manager.state.status == "running"
+    assert manager.state.pause is None
+    assert manager.state.current_plan_path is None
+
+def test_non_plan_pause_clears_current_plan_path():
+    manager = RunnerManager(command_builder=_fake_quick_runner_command)
+    manager.state.current_plan_path = "reports/architecture_plan.md"
+
+    manager.state.apply_event({"type": "pause", "action_required": "CONFLICT_REQUIRED", "message": "conflict"})
+
+    assert manager.state.status == "paused"
+    assert manager.state.current_plan_path is None
+
 def test_process_exit_zero_preserves_paused_state():
     manager = RunnerManager(command_builder=_fake_quick_runner_command)
     manager.state.status = "paused"
@@ -850,6 +1321,247 @@ def test_process_exit_zero_preserves_paused_state():
     assert manager.state.status == "paused"
     assert manager.state.pause == {"action_required": "PLAN_REVIEW"}
     assert manager.state.stages["planning"] == "paused"
+
+def test_state_from_runtime_manifest_restores_latest_pause_payload(tmp_path):
+    output_dir = tmp_path / "hydrate_run"
+    trace_dir = output_dir / "reports" / "traces"
+    trace_dir.mkdir(parents=True)
+    plan_path = output_dir / "reports" / "architecture_plan.md"
+    (trace_dir / "runtime_events.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "runtime_event",
+                "event_type": "node_done",
+                "status": "paused",
+                "run_id": "run-hydrate",
+                "job_id": "job-hydrate",
+                "node_id": "PAUSE.PLAN_REVIEW",
+                "message": "Architecture plan is ready.",
+                "artifact_refs": [str(plan_path)],
+                "source": {"type": "pause", "action_required": "PLAN_REVIEW"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    manifest = {
+        "run_id": "run-hydrate",
+        "job_id": "job-hydrate",
+        "status": "paused",
+        "project_name": "hydrate",
+        "output_dir": str(output_dir),
+        "active_node_id": "RUNNER.PROCESS_EXIT",
+        "agents": {},
+    }
+
+    snapshot = server_module._state_from_runtime_manifest(manifest)
+
+    assert snapshot["status"] == "paused"
+    assert snapshot["pause"]["action_required"] == "PLAN_REVIEW"
+    assert snapshot["pause"]["plan_path"] == str(plan_path)
+    assert snapshot["current_plan_path"] == str(plan_path)
+    assert snapshot["stages"]["planning"] == "paused"
+    assert snapshot["agents"]["agent1"]["status"] == "paused"
+
+def test_state_from_runtime_manifest_restores_hitl_required_pause(tmp_path):
+    output_dir = tmp_path / "hitl_run"
+    trace_dir = output_dir / "reports" / "traces"
+    trace_dir.mkdir(parents=True)
+    checklist = output_dir / "reports" / "agent1_requirement_clarification.md"
+    (trace_dir / "runtime_events.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "runtime_event",
+                "event_type": "node_done",
+                "status": "paused",
+                "run_id": "run-hitl",
+                "job_id": "job-hitl",
+                "node_id": "PAUSE.HITL_REQUIRED",
+                "message": "Agent 1 infra hard stop.",
+                "artifact_refs": [str(checklist)],
+                "source": {"type": "pause", "action_required": "HITL_REQUIRED"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    manifest = {
+        "run_id": "run-hitl",
+        "job_id": "job-hitl",
+        "status": "paused",
+        "project_name": "hitl",
+        "output_dir": str(output_dir),
+        "active_node_id": "RUNNER.PROCESS_EXIT",
+        "agents": {},
+    }
+
+    snapshot = server_module._state_from_runtime_manifest(manifest)
+
+    assert snapshot["pause"]["action_required"] == "HITL_REQUIRED"
+    assert snapshot["current_plan_path"] is None
+    assert snapshot["stages"]["planning"] == "paused"
+    assert snapshot["stages"]["hitl"] == "paused"
+    assert snapshot["agents"]["agent1"]["status"] == "paused"
+
+def test_state_from_runtime_manifest_infers_hitl_required_from_partial_plan_event(tmp_path):
+    output_dir = tmp_path / "partial_run"
+    trace_dir = output_dir / "reports" / "traces"
+    trace_dir.mkdir(parents=True)
+    checklist = output_dir / "reports" / "agent1_requirement_clarification.md"
+    (trace_dir / "runtime_events.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "runtime_event",
+                "event_type": "node_done",
+                "status": "paused",
+                "run_id": "run-partial",
+                "job_id": "job-partial",
+                "node_id": "AGENT1.PARTIAL_PLAN_GENERATED",
+                "message": "Agent 1 stopped before release; partial plan and recovery checklist are available.",
+                "artifact_refs": [str(checklist)],
+                "source": {"type": "agent_action", "status": "paused", "action": "Partial plan generated"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    manifest = {
+        "run_id": "run-partial",
+        "job_id": "job-partial",
+        "status": "paused",
+        "project_name": "partial",
+        "output_dir": str(output_dir),
+        "active_node_id": "RUNNER.PROCESS_EXIT",
+        "agents": {},
+    }
+
+    snapshot = server_module._state_from_runtime_manifest(manifest)
+
+    assert snapshot["pause"]["action_required"] == "HITL_REQUIRED"
+    assert snapshot["pause"]["artifact_path"] == str(checklist)
+    assert snapshot["current_plan_path"] is None
+    assert snapshot["stages"]["planning"] == "paused"
+    assert snapshot["stages"]["hitl"] == "paused"
+
+def test_paused_agent_action_synthesizes_requirement_clarification_pause():
+    manager = RunnerManager(command_builder=_fake_quick_runner_command)
+    manager.state.run_id = "run-clarify"
+    manager.state.job_id = "job-clarify"
+
+    manager.state.apply_event(
+        {
+            "type": "agent_action",
+            "agent": "agent1",
+            "status": "paused",
+            "action": "Requirement clarification needed",
+            "summary": "Need workload and power budget.",
+            "artifact": "reports/agent1_requirement_clarification.md",
+        }
+    )
+    manager.state.apply_event({"type": "process_exit", "returncode": 0})
+
+    snapshot = manager.state.snapshot()
+    assert snapshot["status"] == "paused"
+    assert snapshot["pause"]["action_required"] == "REQUIREMENT_CLARIFICATION"
+    assert snapshot["pause"]["plan_path"] == "reports/agent1_requirement_clarification.md"
+    assert snapshot["current_plan_path"] is None
+
+def test_generic_paused_agent_action_waits_for_specific_pause_artifact():
+    manager = RunnerManager(command_builder=_fake_quick_runner_command)
+    manager.state.run_id = "run-clarify"
+    manager.state.job_id = "job-clarify"
+
+    manager.state.apply_event(
+        {
+            "type": "agent_action",
+            "agent": "agent1",
+            "status": "paused",
+            "action": "A1.00 Intake Council",
+            "summary": "classification=DESIGN_NEEDS_CLARIFICATION; consensus=0.7",
+        }
+    )
+    assert manager.state.pause is None
+
+    manager.state.apply_event(
+        {
+            "type": "agent_action",
+            "agent": "agent1",
+            "status": "paused",
+            "action": "Requirement clarification needed",
+            "summary": "Need reset polarity.",
+            "artifact": "reports/agent1_requirement_clarification.md",
+        }
+    )
+
+    snapshot = manager.state.snapshot()
+    assert snapshot["pause"]["action_required"] == "REQUIREMENT_CLARIFICATION"
+    assert snapshot["pause"]["artifact_path"] == "reports/agent1_requirement_clarification.md"
+
+def test_paused_agent_action_synthesizes_conflict_pause_with_artifact():
+    manager = RunnerManager(command_builder=_fake_quick_runner_command)
+    manager.state.run_id = "run-conflict"
+    manager.state.job_id = "job-conflict"
+
+    manager.state.apply_event(
+        {
+            "type": "agent_action",
+            "agent": "agent1",
+            "status": "paused",
+            "action": "Conflict resolution needed",
+            "summary": "Reset polarity conflict.",
+            "artifact": "reports/agent1_requirement_clarification.md",
+        }
+    )
+    manager.state.apply_event({"type": "process_exit", "returncode": 0})
+
+    snapshot = manager.state.snapshot()
+    assert snapshot["status"] == "paused"
+    assert snapshot["pause"]["action_required"] == "CONFLICT_REQUIRED"
+    assert snapshot["pause"]["artifact_path"] == "reports/agent1_requirement_clarification.md"
+    assert snapshot["current_plan_path"] is None
+
+def test_paused_agent_action_synthesizes_non_design_pause_with_artifact():
+    manager = RunnerManager(command_builder=_fake_quick_runner_command)
+    manager.state.run_id = "run-non-design"
+
+    manager.state.apply_event(
+        {
+            "type": "agent_action",
+            "agent": "agent1",
+            "status": "paused",
+            "action": "Non-design conversation answered",
+            "summary": "I am an AI assistant.",
+            "artifact": "reports/agent1_requirement_clarification.md",
+        }
+    )
+
+    snapshot = manager.state.snapshot()
+    assert snapshot["status"] == "paused"
+    assert snapshot["pause"]["action_required"] == "NON_DESIGN_CONVERSATION"
+    assert snapshot["pause"]["artifact_path"] == "reports/agent1_requirement_clarification.md"
+
+def test_paused_agent_action_synthesizes_hitl_required_for_partial_plan():
+    manager = RunnerManager(command_builder=_fake_quick_runner_command)
+    manager.state.run_id = "run-partial"
+    manager.state.job_id = "job-partial"
+
+    manager.state.apply_event(
+        {
+            "type": "agent_action",
+            "agent": "agent1",
+            "status": "paused",
+            "action": "Partial plan generated",
+            "summary": "Agent 1 stopped before release; partial plan and recovery checklist are available.",
+            "artifact": "reports/agent1_requirement_clarification.md",
+        }
+    )
+    manager.state.apply_event({"type": "process_exit", "returncode": 0})
+
+    snapshot = manager.state.snapshot()
+    assert snapshot["status"] == "paused"
+    assert snapshot["pause"]["action_required"] == "HITL_REQUIRED"
+    assert snapshot["pause"]["artifact_path"] == "reports/agent1_requirement_clarification.md"
+    assert snapshot["current_plan_path"] is None
 
 def test_process_exit_stop_marks_running_stage_and_agent_stopped():
     manager = RunnerManager(command_builder=_fake_quick_runner_command)
@@ -903,6 +1615,28 @@ def test_resume_command_reuses_start_checkpoint_db(tmp_path):
     command = manager._default_command("resume", {"notes": "ok", "resume_action": "PLAN_REVIEW"})
 
     assert command[command.index("--checkpoint-db") + 1] == str(checkpoint_db)
+
+def test_resume_normalizes_generic_approve_to_current_pause_action(tmp_path):
+    manager = RunnerManager(root=tmp_path)
+    output_dir = tmp_path / "outputs" / "demo"
+    manager.state = RunState(
+        run_id="run-1",
+        status="paused",
+        project_name="demo",
+        output_dir=str(output_dir),
+        thread_id="thread-1",
+        pause={"action_required": "HUMAN_REVIEW"},
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_launch(command_name: str, payload: dict[str, object]) -> None:
+        captured.update(payload)
+
+    manager._launch = fake_launch  # type: ignore[method-assign]
+
+    asyncio.run(manager.resume({"notes": "ok", "resume_action": "approve"}))
+
+    assert captured["resume_action"] == "HUMAN_REVIEW"
 
 def test_start_endpoint_reports_active_run(tmp_path, monkeypatch):
     _configure_owner_key(tmp_path, monkeypatch)
@@ -1028,6 +1762,74 @@ def test_status_tailer_starts_at_end_to_prevent_stale_logs(tmp_path, monkeypatch
     assert "new planning" in text
     assert "old SIGNOFF_READY" not in text
     assert "old resume ok" not in text
+
+
+def test_human_review_pause_reports_missing_disk_artifacts(tmp_path, monkeypatch):
+    stream = io.StringIO()
+    monkeypatch.setattr(swarm_runner, "_EVENT_STDOUT", stream)
+    monkeypatch.setattr(swarm_runner, "_RUN_ID", "run-missing-artifact")
+
+    swarm_runner._emit_pause(
+        {
+            "action_required": "HUMAN_REVIEW",
+            "message": "review",
+            "rtl_files": ["missing_top.sv"],
+            "formal_files": ["fv_missing_top.sv"],
+        },
+        tmp_path,
+    )
+
+    events = [json.loads(line) for line in stream.getvalue().splitlines() if line.strip()]
+    assert {"type": "stage", "stage": "rtl", "status": "failed", "run_id": "run-missing-artifact"} in events
+    assert {"type": "stage", "stage": "formal", "status": "failed", "run_id": "run-missing-artifact"} in events
+    issues = read_debug_issues(tmp_path)
+    assert [issue["code"] for issue in issues] == ["human_review_missing_artifact", "human_review_missing_artifact"]
+    assert all("missing" in issue["artifact_ref"] for issue in issues)
+
+
+def test_signoff_ready_done_marks_all_active_pipeline_stages_pass(tmp_path, monkeypatch):
+    stream = io.StringIO()
+    monkeypatch.setattr(swarm_runner, "_EVENT_STDOUT", stream)
+    monkeypatch.setattr(swarm_runner, "_RUN_ID", "run-signoff-ready")
+
+    swarm_runner._emit_done({"status": "SIGNOFF_READY"}, tmp_path)
+
+    events = [json.loads(line) for line in stream.getvalue().splitlines() if line.strip()]
+    stages = {(event.get("stage"), event.get("status")) for event in events if event.get("type") == "stage"}
+    assert {
+        ("rtl", "pass"),
+        ("formal", "pass"),
+        ("hitl", "pass"),
+        ("dv", "pass"),
+        ("physical", "pass"),
+        ("signoff", "pass"),
+    }.issubset(stages)
+
+def test_conflict_pause_emits_reviewable_artifact_path(tmp_path, monkeypatch):
+    stream = io.StringIO()
+    monkeypatch.setattr(swarm_runner, "_EVENT_STDOUT", stream)
+    monkeypatch.setattr(swarm_runner, "_RUN_ID", "run-conflict-artifact")
+    clarification = tmp_path / "reports" / "agent1_requirement_clarification.md"
+    clarification.parent.mkdir(parents=True)
+    clarification.write_text("# Conflict\n", encoding="utf-8")
+
+    swarm_runner._emit_pause(
+        {
+            "action_required": "CONFLICT_REQUIRED",
+            "message": "reset conflict",
+            "plan_path": str(clarification),
+            "artifact_path": str(clarification),
+        },
+        tmp_path,
+    )
+
+    events = [json.loads(line) for line in stream.getvalue().splitlines() if line.strip()]
+    paused_actions = [event for event in events if event.get("type") == "agent_action" and event.get("status") == "paused"]
+    pauses = [event for event in events if event.get("type") == "pause"]
+    assert paused_actions and paused_actions[0]["artifact"] == str(clarification)
+    assert pauses and pauses[0]["action_required"] == "CONFLICT_REQUIRED"
+    assert pauses[0]["plan_path"] == str(clarification)
+    assert pauses[0]["artifact_path"] == str(clarification)
 
 
 def test_websocket_replays_events_and_rejects_bad_origin():

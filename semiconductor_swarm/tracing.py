@@ -36,6 +36,7 @@ TRACE_FILES = {
     "agent1_state_snapshots": "agent1_state_snapshots.jsonl",
     "agent1_artifact_lineage": "agent1_artifact_lineage.jsonl",
     "agent1_completion": "agent1_completion_trace.jsonl",
+    "debug_issues": "debug_issues.jsonl",
 }
 
 REQUIRED_AGENT1_CORE_NODES = (
@@ -62,6 +63,10 @@ SECRET_KEY_RE = re.compile(r"(api[_-]?key|authorization|bearer|token|access[_-]?
 BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+", re.I)
 OPENAI_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b")
 LONG_SECRETISH_RE = re.compile(r"\b[A-Za-z0-9_\-]{32,}\b")
+SECRET_ASSIGNMENT_RE = re.compile(
+    r"\b((?:api[_-]?key|access[_-]?token|secret|password|credential)\s*[:=]\s*)['\"]?([^\s'\"&,;]+)",
+    re.I,
+)
 
 _thread_local = threading.local()
 _context_lock = threading.Lock()
@@ -169,6 +174,7 @@ def _redact_value(value: Any, key_path: str) -> tuple[Any, bool]:
     if isinstance(value, str):
         clean = BEARER_RE.sub("Bearer <redacted>", value)
         clean = OPENAI_KEY_RE.sub("<redacted>", clean)
+        clean = SECRET_ASSIGNMENT_RE.sub(r"\1<redacted>", clean)
         if SECRET_KEY_RE.search(key_path) and value:
             clean = "<redacted>"
         if clean != value:
@@ -184,6 +190,8 @@ def secret_leaks(value: Any) -> list[str]:
         leaks.append("bearer_token")
     if OPENAI_KEY_RE.search(text):
         leaks.append("openai_key")
+    if SECRET_ASSIGNMENT_RE.search(text):
+        leaks.append("secret_assignment")
     for match in LONG_SECRETISH_RE.finditer(text):
         token = match.group(0)
         if any(prefix in token.lower() for prefix in ("secret", "token", "key")):
@@ -282,6 +290,52 @@ def trace_event(
         except Exception:
             pass
     return event
+
+def trace_debug_issue(
+    *,
+    severity: str,
+    source: str,
+    code: str,
+    message: str,
+    details: Any | None = None,
+    run_id: str = "",
+    revision_id: str = "",
+    artifact_ref: str = "",
+    node_id: str = "",
+    output_dir: str | Path | None = None,
+    emit_live: bool = True,
+) -> dict[str, Any]:
+    context = current_trace_context()
+    clean_details = redact(details or {})
+    issue = {
+        "type": "debug_issue",
+        "schema_version": "swarm.debug_issue.v1",
+        "severity": severity if severity in {"trace", "info", "warning", "error", "fatal"} else "warning",
+        "source": source,
+        "code": code,
+        "message": message,
+        "details": clean_details,
+        "run_id": run_id or context.run_id,
+        "revision_id": revision_id,
+        "artifact_ref": artifact_ref,
+        "node_id": node_id,
+        "timestamp": now_iso(),
+    }
+    if isinstance(clean_details, dict):
+        for key in ("iteration", "span_id", "parent_span_id", "group_id", "manager_id", "model_call_id"):
+            if clean_details.get(key) is not None:
+                issue[key] = clean_details.get(key)
+    root = trace_root(output_dir)
+    if root is not None:
+        append_jsonl(root / TRACE_FILES["debug_issues"], issue)
+    if emit_live:
+        try:
+            from semiconductor_swarm.runtime_events import emit_runtime_event
+
+            emit_runtime_event(issue)
+        except Exception:
+            pass
+    return issue
 
 
 def trace_snapshot(

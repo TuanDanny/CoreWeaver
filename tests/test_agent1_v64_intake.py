@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from semiconductor_swarm.agents.agent1_planning.agent1_llm_client import Agent1CodexResult
 from semiconductor_swarm.agents.agent1_planning.agent1_subgraph import run_agent1_hierarchical_planning
-from semiconductor_swarm.agents.agent1_planning.intake_council import run_agent1_intake_council
+from semiconductor_swarm.agents.agent1_planning.intake_council import build_requirement_clarification_markdown, detect_technical_ambiguities, run_agent1_intake_council
 from semiconductor_swarm.agents.agent1_planning.replay_cli import verify_agent1_v64_replay_output
 
 def _intake_payload(requirement: str, classification: str = "DESIGN_READY") -> dict:
@@ -108,6 +108,9 @@ def test_v64_non_design_stops_after_real_intake_without_architecture():
     assert "spec" not in result
     assert "architecture_plan.md" not in result["agent1_artifacts"]
     assert "agent1_requirement_clarification.md" in result["agent1_artifacts"]
+    assert "agent1_clarification_options.json" in result["agent1_artifacts"]
+    assert result["clarification_questions"]
+    assert result["clarification_questions"][0]["options"]
     assert result["intake_report"]["canonical_intent"]["accelerator"] is None
 
 def test_v64_vietnamese_identity_question_uses_zero_codex_calls():
@@ -140,7 +143,7 @@ def test_v64_vietnamese_age_question_uses_zero_codex_calls():
     assert "không có tuổi" in report["user_response"]
     assert "architecture_plan.md" not in result["agent1_artifacts"]
 
-def test_v64_design_ready_runs_46_real_codex_nodes_and_writes_policy_artifacts():
+def test_v64_design_ready_runs_intake_plus_v71_group_session_nodes_and_writes_policy_artifacts():
     calls = []
 
     def fake(prompt: str) -> Agent1CodexResult:
@@ -150,7 +153,7 @@ def test_v64_design_ready_runs_46_real_codex_nodes_and_writes_policy_artifacts()
     with patch("semiconductor_swarm.agents.agent1_planning.agent1_subgraph.call_agent1_codex", side_effect=fake):
         result = run_agent1_hierarchical_planning("Tao chip AI camera APB 100MHz", "ai_cam", planning_mode="normal")
 
-    assert len(calls) == 46
+    assert len(calls) == 15
     assert result["report"]["intake_router"]["classification"] == "DESIGN_READY"
     assert result["report"]["v51_council"]["iteration_count"] == 1
     assert result["spec"]["accelerator"]["type"] == "int8_mac_array"
@@ -231,7 +234,8 @@ def test_v64_mixed_identity_question_with_uart_requirement_stays_design_ready():
 
     assert report["classification"] == "DESIGN_READY"
     assert report["ready_for_council"] is True
-    assert report["codex_call_count"] == 6
+    assert report["codex_call_count"] == 0
+    assert report["fast_path"]["kind"] == "DESIGN_READY_SIMPLE_IP"
     assert report["canonical_intent"]["custom_ip"] == "uart_apb_controller"
 
 def test_v64_mixed_age_question_with_uart_requirement_stays_design_ready():
@@ -275,13 +279,14 @@ def test_v64_mixed_age_question_with_uart_requirement_stays_design_ready():
 
     report = run_agent1_intake_council("ban may tuoi, tao UART APB controller 50MHz", "mixed_age_uart", fake)
 
-    assert len(calls) == 6
+    assert len(calls) == 0
     assert report["classification"] == "DESIGN_READY"
     assert report["ready_for_council"] is True
-    assert report["codex_call_count"] == 6
+    assert report["codex_call_count"] == 0
+    assert report["fast_path"]["kind"] == "DESIGN_READY_SIMPLE_IP"
     assert report["canonical_intent"]["custom_ip"] == "uart_apb_controller"
 
-def test_v65_cpu_apb_uart_schema_variants_preserve_canonical_intent():
+def test_v71_cpu_apb_uart_schema_variants_preserve_intent_but_block_missing_fields():
     payloads = [
         {
             "classification": "DESIGN_READY",
@@ -319,8 +324,8 @@ def test_v65_cpu_apb_uart_schema_variants_preserve_canonical_intent():
         fake,
     )
 
-    assert report["classification"] == "DESIGN_READY"
-    assert report["ready_for_council"] is True
+    assert report["classification"] == "DESIGN_NEEDS_CLARIFICATION"
+    assert report["ready_for_council"] is False
     assert report["canonical_intent"]["cpu"]["width_bits"] == 32
     assert report["canonical_intent"]["cpu"]["isa"] == "rv32imc"
     assert report["canonical_intent"]["bus"]["protocol"] == "APB"
@@ -329,6 +334,7 @@ def test_v65_cpu_apb_uart_schema_variants_preserve_canonical_intent():
     assert report["canonical_intent"]["node"] == "28nm"
     assert report["canonical_intent"]["memory"] == {"rom": "boot_rom", "sram": "single_port_sram", "cache": "none"}
     assert report["defaulted_fields"]
+    assert {"clock", "node", "power"}.issubset(set(report["missing_fields"]))
     assert report["blocking_missing_fields"] == []
 
 def test_v65_raw_design_rescues_non_design_adjudicator_misroute():
@@ -407,7 +413,7 @@ def test_v65_project_label_and_prompt_instruction_citations_are_quarantined():
     assert "simple CPU" in citation_text
     assert report["policy_matrix"]["pass"] is True
 
-def test_v65_simple_cpu_uses_safe_defaults_and_proceeds_to_council():
+def test_v71_simple_cpu_uses_safe_defaults_but_asks_for_missing_release_fields():
     payload = {
         "classification": "DESIGN_NEEDS_CLARIFICATION",
         "normalized_requirement": "make a simple CPU",
@@ -427,11 +433,11 @@ def test_v65_simple_cpu_uses_safe_defaults_and_proceeds_to_council():
 
     report = run_agent1_intake_council("make a simple CPU", "simple_cpu", fake)
 
-    assert report["classification"] == "DESIGN_READY"
-    assert report["ready_for_council"] is True
+    assert report["classification"] == "DESIGN_NEEDS_CLARIFICATION"
+    assert report["ready_for_council"] is False
     assert report["canonical_intent"]["cpu"]["width_bits"] == 32
     assert report["canonical_intent"]["bus"]["protocol"] == "APB"
-    assert report["missing_fields"] == []
+    assert {"bus/protocol", "clock", "node"}.issubset(set(report["missing_fields"]))
 
 def test_v65_contradiction_still_blocks_even_with_detected_design_intent():
     payload = {
@@ -457,6 +463,53 @@ def test_v65_contradiction_still_blocks_even_with_detected_design_intent():
     assert report["ready_for_council"] is False
     assert report["contradictions"]
 
+def test_v73_multi_peripheral_no_cpu_requirement_uses_zero_codex_fast_path():
+    requirement = (
+        "Design a release-ready APB multi-peripheral subsystem at 75MHz for FPGA-safe generic RTL. "
+        "No CPU core. Use one external APB host, 32-bit data, active-low synchronous reset, 28nm planning target. "
+        "Include exactly these IP blocks: UART with baud_div and IRQ, SPI master with mode0-3 and 4 chip selects, "
+        "I2C controller for 100kHz/400kHz with IRQ, 32-bit GPIO with direction/data/interrupt registers, "
+        "timer/watchdog with timeout IRQ. Formal-first SVA plus cocotb, no UVM. "
+        "Generate clean Agent1 plan, locked APB register map, and Agent2-ready handoff. "
+        "Do not invent extra CPU, DMA, cache, or interrupt controller unless required and justified."
+    )
+
+    def fail_if_called(_prompt: str) -> Agent1CodexResult:
+        raise AssertionError("Codex must not be called for complete APB peripheral-only subsystem.")
+
+    with patch("semiconductor_swarm.agents.agent1_planning.agent1_subgraph.call_agent1_codex", side_effect=fail_if_called):
+        result = run_agent1_hierarchical_planning(requirement, "apb_peripheral_fast", planning_mode="normal")
+
+    report = result["report"]["intake_router"]
+    spec = result["spec"]
+    assert report["classification"] == "DESIGN_READY"
+    assert report["codex_call_count"] == 0
+    assert report["fast_path"]["kind"] == "DESIGN_READY_SIMPLE_IP"
+    assert set(report["fast_path"]["peripherals"]) == {"uart", "spi", "i2c", "gpio", "timer"}
+    assert spec["requirements"]["cpu_requested"] is False
+    assert spec["cpu_subsystem"]["synthesized_cpu"] is False
+    assert spec["bus_topology"]["masters"] == ["external_apb_host"]
+    assert {block["name"] for block in spec["ip_blocks"]} == {"uart", "spi", "i2c", "gpio", "timer"}
+    assert set(spec["memory_map"]["gpio"]["registers"]) >= {"data_in", "data_out", "direction", "irq_status", "irq_enable"}
+    assert set(spec["memory_map"]["timer"]["registers"]) >= {"ctrl", "load", "value", "watchdog", "irq_status", "irq_enable"}
+    assert "interrupt_ctrl" not in spec["memory_map"]
+
+def test_v73_cpu_soc_request_still_uses_council_not_simple_fast_path():
+    calls = []
+
+    def fake(prompt: str) -> Agent1CodexResult:
+        calls.append(prompt)
+        return _fake_codex(prompt)
+
+    report = run_agent1_intake_council(
+        "Design an RV32IMC microcontroller SoC with APB UART at 100MHz.",
+        "rv32_soc",
+        fake,
+    )
+
+    assert report["codex_call_count"] > 0
+    assert "fast_path" not in report
+
 def test_v64_replay_verifies_hashes_without_codex_and_blocks_missing_versions(tmp_path):
     output_dir = tmp_path / "run"
     agent1 = output_dir / "reports" / "agent1"
@@ -476,3 +529,133 @@ def test_v64_replay_verifies_hashes_without_codex_and_blocks_missing_versions(tm
     assert bad["pass"] is False
     assert bad["signoff_claimed"] is False
     assert any(item.startswith("schema_version_mismatch") for item in bad["failures"])
+
+def test_v71_clarification_markdown_enriches_security_missing_fields():
+    markdown = build_requirement_clarification_markdown(
+        {
+            "classification": "DESIGN_NEEDS_CLARIFICATION",
+            "consensus_score": 0.68,
+            "calibrated_confidence": 0.65,
+            "raw_requirement": "Add crypto, secure boot, OTP, and side-channel protection.",
+            "canonical_intent": {"purpose": "secure root-of-trust controller", "custom_ip": "security_subsystem"},
+            "missing_fields": [{"field": "CPU/IP/peripheral/accelerator intent"}],
+            "user_response": "Need security details before release.",
+            "brief_form": {"chip_purpose": "secure root-of-trust controller"},
+            "policy_matrix": {"policies": []},
+        }
+    )
+
+    assert "## Clarification Checklist" in markdown
+    for needle in (
+        "security threat model",
+        "crypto accelerator algorithm suite and key management",
+        "OTP/eFuse provisioning and lifecycle state flow",
+        "secure debug/tamper response policy",
+        "side-channel leakage model",
+        "clock/reset and protected register access policy",
+    ):
+        assert needle in markdown
+
+def test_v74_infra_hitl_clarification_suppresses_unrelated_domain_noise():
+    markdown = build_requirement_clarification_markdown(
+        {
+            "classification": "DESIGN_NEEDS_CLARIFICATION",
+            "action_required": "HITL_REQUIRED",
+            "hitl_reason": "agent1_council_infra_hard_stop",
+            "consensus_score": 0.56,
+            "calibrated_confidence": 0.75,
+            "raw_requirement": "RV32IMC SoC with APB4, UART, SPI, I2C, GPIO, watchdog, formal-first SVA and cocotb.",
+            "canonical_intent": {
+                "purpose": "CPU architecture",
+                "cpu": {"isa": "RV32IMC", "width_bits": 32},
+                "bus": {"protocol": "APB4"},
+                "peripheral": ["uart", "spi", "i2c", "gpio", "watchdog"],
+                "clock": {"frequency_mhz": 50},
+                "node": "FPGA",
+                "verification_scope": ["formal-first SVA", "cocotb"],
+            },
+            "missing_fields": [
+                "security threat model",
+                "crypto accelerator algorithm suite and key management",
+                "Ethernet speed",
+                "target workload/model type",
+            ],
+            "user_response": "Agent 1 deep council hit the infrastructure hard-stop threshold.",
+            "policy_matrix": {"policies": [{"policy_id": "P-A1-007", "status": "fail", "failure_reason": "Agent 1 council status is HITL_REQUIRED."}]},
+        }
+    )
+
+    assert "fix Agent 1 council model/API reliability before Agent2 handoff" in markdown
+    assert "Open Debug > Raw Issues" in markdown
+    assert "power budget or power intent" in markdown
+    for noisy in ("security threat model", "crypto accelerator", "Ethernet speed", "target workload/model type"):
+        assert noisy not in markdown
+
+def test_v78_detects_adc_width_and_irq_ambiguity_questions():
+    requirement = "Deep Planning mixed-signal monitor with ADC 12-bit or 16-bit samples; IRQ polarity unspecified; reset unclear."
+
+    ambiguities = detect_technical_ambiguities(requirement)
+    ids = {item["id"] for item in ambiguities}
+    markdown = build_requirement_clarification_markdown(
+        {
+            "classification": "DESIGN_NEEDS_CLARIFICATION",
+            "action_required": "HITL_REQUIRED",
+            "hitl_reason": "agent1_council_infra_hard_stop",
+            "consensus_score": 0.7,
+            "calibrated_confidence": 0.7,
+            "raw_requirement": requirement,
+            "canonical_intent": {"purpose": "mixed-signal monitor", "custom_ip": "adc_monitor"},
+            "missing_fields": ["fix Agent 1 council model/API reliability before Agent2 handoff"],
+            "technical_ambiguities": ambiguities,
+            "user_response": "Agent 1 deep council hit the infrastructure hard-stop threshold.",
+            "policy_matrix": {"policies": []},
+        }
+    )
+
+    assert {"adc_resolution_conflict", "irq_polarity_type_missing", "reset_policy_missing"} <= ids
+    assert "Questions To Answer Now" in markdown
+    assert "Choose one ADC sample width" in markdown
+    assert "Confirm IRQ type and polarity" in markdown
+    assert "Infrastructure Problem" in markdown
+    assert "Debug Next Steps" in markdown
+
+def test_v78_deep_blocks_agent2_on_unanswered_technical_ambiguity():
+    requirement = (
+        "Design an APB ADC monitor IP at 50MHz. ADC can be 12-bit or 16-bit. "
+        "IRQ polarity unspecified and reset unclear. Formal-first SVA plus cocotb."
+    )
+    payload = {
+        "classification": "DESIGN_READY",
+        "normalized_requirement": requirement,
+        "canonical_intent": {
+            "purpose": "ADC monitor IP",
+            "custom_ip": "adc_monitor",
+            "bus": "APB",
+            "clock": "50MHz",
+            "verification_scope": ["formal-first SVA", "cocotb"],
+        },
+        "extracted_intent": {"bus": "APB", "custom_ip": "adc_monitor"},
+        "missing_fields": [],
+        "user_response": "Ready.",
+        "brief_form": {},
+        "citations": [{"source": "raw_requirement", "field": "bus", "text": "APB"}],
+        "conflicts": [],
+        "contradictions": [],
+        "confidence": 0.9,
+    }
+    calls = []
+
+    def fake(prompt: str) -> Agent1CodexResult:
+        calls.append(prompt)
+        return Agent1CodexResult(json.dumps(payload), {"model": "mock", "total_tokens": 1})
+
+    with patch("semiconductor_swarm.agents.agent1_planning.agent1_subgraph.call_agent1_codex", side_effect=fake):
+        result = run_agent1_hierarchical_planning(requirement, "adc_monitor", planning_mode="deep_planning")
+
+    assert result["requires_clarification"] is True
+    assert result["report"]["intake_router"]["hitl_reason"] == "agent1_technical_ambiguity"
+    assert "agent1_clarification_options.json" in result["agent1_artifacts"]
+    options = json.loads(result["agent1_artifacts"]["agent1_clarification_options.json"])
+    codes = {item["code"] for item in options["questions"]}
+    assert {"adc_resolution_conflict", "irq_polarity_type_missing", "reset_policy_missing"} <= codes
+    assert not any("Agent 1 V5.1" in prompt or "Cluster Council" in prompt for prompt in calls)

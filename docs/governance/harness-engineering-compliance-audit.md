@@ -17,15 +17,15 @@ Audit repository knowledge system against locally captured OpenAI Harness Engine
 ## Compliance Matrix
 | Principle | Evidence | Status |
 |---|---|---|
-| Repository knowledge is system of record | `docs/design-docs/repo-knowledge-store.md`, `docs/governance/source-of-truth-policy.md`, `PLANS.md` | pass |
+| Repository knowledge is system of record | `docs/design-docs/repo-knowledge-store.md`, `docs/governance/source-of-truth-policy.md`, local-only private plans | pass |
 | Give agents a map, not a long manual | `AGENTS.md`, `ARCHITECTURE.md`, `docs/knowledge-map.yaml` | pass |
 | Keep `AGENTS.md` concise | `AGENTS.md` is 43 lines and routes to deeper docs | pass |
 | Put deeper knowledge in structured docs | `docs/design-docs/`, `docs/product-specs/`, `docs/governance/`, `docs/prompts/`, `docs/agent-task-cards/`, `docs/generated/`, `docs/legacy/` | pass |
 | Make docs maintainable and checkable | `scripts/check_docs_health.py`, `tests/test_docs_health.py`, `tests/test_prompt_contracts.py` | pass |
 | Keep canonical prompt paths explicit | `docs/prompts/index.md`, `docs/prompts/canonical-prompts.md`, `docs/knowledge-map.yaml` | pass |
-| Preserve legacy knowledge until migration | `docs/legacy/index.md`, `docs/exec-plans/superseded/index.md`, completed plan record | pass |
+| Preserve legacy knowledge until migration | `docs/legacy/index.md`, local-only private plan archive | pass |
 | Define conflict/source-of-truth order | `AGENTS.md`, `docs/governance/source-of-truth-policy.md` | pass |
-| Keep active/completed/superseded plans unambiguous | `PLANS.md`, `docs/exec-plans/*/index.md`, `scripts/check_docs_health.py` | pass |
+| Keep public/private boundary unambiguous | `.gitignore`, `docs/GITHUB_PUBLISHING.md`, `scripts/check_docs_health.py` | pass |
 | Detect stale generated/manual index paths | `scripts/check_docs_health.py`, `docs/generated/agent-contract-index.md`, `docs/generated/prompt-contract-index.md` | pass |
 
 ## Verification Run

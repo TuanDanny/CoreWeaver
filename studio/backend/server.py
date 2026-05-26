@@ -30,6 +30,7 @@ from studio.backend.runtime_tracking import (
     find_runtime_output_dir,
     latest_runtime_manifest,
     load_runtime_bundle,
+    read_runtime_events,
     runtime_trace_dir,
     validate_runtime_output_dir,
 )
@@ -361,6 +362,14 @@ def create_app(
             if tracker is not None:
                 tracker.write_recovery_report({"run_id": run_id, "output_dir": output_dir, "status": "failed"}, reason="manifest_corrupt", action="runtime_api_read")
             raise HTTPException(status_code=409, detail=f"manifest corrupt: {'; '.join(bundle['errors'])}")
+        if runner.state.run_id == run_id and runner.state.output_dir:
+            runtime_events = runner.runtime_tracker.record_source_event(
+                {"type": "websocket_hydrate", "status": "pass", "message": "Runtime bundle hydrate requested."},
+                runner.state.snapshot(),
+            )
+            for event in runtime_events:
+                await app.state.event_hub.publish(event)
+            bundle = load_runtime_bundle(output_dir)
         return bundle
 
     @app.post("/api/runs/start")
@@ -419,6 +428,12 @@ def create_app(
             return
         hub: EventHub = app.state.event_hub
         await websocket.accept()
+        runtime_events = runner.runtime_tracker.record_source_event(
+            {"type": "websocket_connect", "status": "pass", "message": "WebSocket client connected."},
+            runner.state.snapshot(),
+        )
+        for event in runtime_events:
+            await hub.publish(event)
         queue = hub.subscribe()
         heartbeat = asyncio.create_task(_heartbeat(websocket, app.state.heartbeat_interval_s, effective_run_id))
         sender = asyncio.create_task(_send_events(websocket, queue, effective_run_id))
@@ -426,6 +441,17 @@ def create_app(
         try:
             for event in hub.replay_events(effective_run_id):
                 await websocket.send_json(event)
+                replay_events = runner.runtime_tracker.record_source_event(
+                    {
+                        "type": "websocket_replay",
+                        "status": "pass",
+                        "message": "WebSocket replay event sent.",
+                        "replay_event_id": event.get("event_id"),
+                    },
+                    runner.state.snapshot(),
+                )
+                for replay_event in replay_events:
+                    await hub.publish(replay_event)
             done, pending = await asyncio.wait({heartbeat, sender, receiver}, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 with suppress(Exception):
@@ -478,14 +504,22 @@ def _compact_runtime_fields(bundle: dict[str, Any]) -> dict[str, Any]:
         "debugSummary": bundle.get("debugSummary"),
         "invariantReport": bundle.get("invariantReport"),
         "replayReport": bundle.get("replayReport"),
+        "flowCoverage": bundle.get("flowCoverage"),
+        "debugIssues": bundle.get("debugIssues"),
+        "signoff": bundle.get("signoff"),
     }
 
 def _state_from_runtime_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     stages = {stage: "idle" for stage in STAGES}
     phase = str(manifest.get("active_node_id") or "").lower()
-    for stage in STAGES:
-        if stage in phase:
-            stages[stage] = "running"
+    manifest_status = str(manifest.get("status") or "idle")
+    pause = _latest_pause_from_runtime_events(manifest)
+    if manifest_status in {"starting", "running", "paused"}:
+        for stage in STAGES:
+            if stage in phase:
+                stages[stage] = "paused" if manifest_status == "paused" else "running"
+    if manifest_status == "paused" and pause:
+        _apply_hydrated_pause(stages, pause)
     agents = {agent: {"status": "idle", "action": "Waiting", "evidence": 0} for agent in AGENTS}
     for agent, payload in (manifest.get("agents") or {}).items():
         if agent in agents and isinstance(payload, dict):
@@ -494,9 +528,12 @@ def _state_from_runtime_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
                 "action": str(payload.get("message") or payload.get("last_event_type") or "runtime hydrate"),
                 "evidence": 0,
             }
+    if manifest_status == "paused" and pause:
+        _apply_hydrated_pause_agents(agents, pause)
+    current_plan_path = str(pause.get("plan_path") or "") if pause and str(pause.get("action_required") or "") == "PLAN_REVIEW" else None
     return {
         "run_id": str(manifest.get("run_id") or ""),
-        "status": str(manifest.get("status") or "idle"),
+        "status": manifest_status,
         "pid": None,
         "project_name": str(manifest.get("project_name") or ""),
         "requirement": "",
@@ -513,11 +550,97 @@ def _state_from_runtime_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         "stages": stages,
         "agents": agents,
         "metrics": manifest.get("metrics") or {},
-        "pause": None,
-        "current_plan_path": None,
+        "pause": pause if manifest_status == "paused" else None,
+        "current_plan_path": current_plan_path,
         "last_event_id": 0,
         "runtime": {"manifest": manifest},
     }
+
+def _latest_pause_from_runtime_events(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    output_dir = str(manifest.get("output_dir") or "")
+    run_id = str(manifest.get("run_id") or "")
+    if not output_dir:
+        return None
+    for event in reversed(read_runtime_events(output_dir)):
+        if run_id and str(event.get("run_id") or "") != run_id:
+            continue
+        source = event.get("source") if isinstance(event.get("source"), dict) else {}
+        node_id = str(event.get("node_id") or "")
+        is_pause = str(source.get("type") or "") == "pause" or node_id.startswith("PAUSE.")
+        if not is_pause:
+            if str(event.get("status") or "").lower() != "paused" or str(source.get("type") or "") != "agent_action":
+                continue
+        action = str(source.get("action_required") or _pause_action_from_node_id(node_id) or "")
+        if not action:
+            action = _pause_action_from_runtime_event(event, source)
+        if not action:
+            continue
+        artifact_refs = event.get("artifact_refs") if isinstance(event.get("artifact_refs"), list) else []
+        artifact_path = next((str(ref) for ref in artifact_refs if ref), "")
+        return {
+            "type": "pause",
+            "action_required": action,
+            "message": str(event.get("message") or action),
+            "plan_path": artifact_path,
+            "artifact_path": artifact_path,
+            "run_id": run_id,
+            "job_id": str(event.get("job_id") or manifest.get("job_id") or ""),
+        }
+    return None
+
+def _pause_action_from_node_id(node_id: str) -> str:
+    prefix = "PAUSE."
+    if not node_id.startswith(prefix):
+        return ""
+    return node_id[len(prefix):].upper()
+
+def _pause_action_from_runtime_event(event: dict[str, Any], source: dict[str, Any]) -> str:
+    text = " ".join(
+        str(value or "").lower()
+        for value in (
+            event.get("node_id"),
+            event.get("message"),
+            source.get("action"),
+            source.get("summary"),
+            source.get("message"),
+        )
+    )
+    if any(token in text for token in ("hitl_required", "hitl required", "partial plan", "recovery checklist", "stopped before release")):
+        return "HITL_REQUIRED"
+    if "non-design" in text or "non design" in text:
+        return "NON_DESIGN_CONVERSATION"
+    if "conflict" in text:
+        return "CONFLICT_REQUIRED"
+    if "requirement clarification" in text:
+        return "REQUIREMENT_CLARIFICATION"
+    if "architecture plan" in text or "plan ready" in text:
+        return "PLAN_REVIEW"
+    if "human" in text:
+        return "HUMAN_REVIEW"
+    return ""
+
+def _apply_hydrated_pause(stages: dict[str, str], pause: dict[str, Any]) -> None:
+    action = str(pause.get("action_required") or "")
+    if action == "HUMAN_REVIEW":
+        stages["hitl"] = "paused"
+    elif action == "HITL_REQUIRED":
+        stages["planning"] = "paused"
+        stages["hitl"] = "paused"
+    else:
+        stages["planning"] = "paused"
+
+def _apply_hydrated_pause_agents(agents: dict[str, dict[str, Any]], pause: dict[str, Any]) -> None:
+    action = str(pause.get("action_required") or "")
+    if action == "HUMAN_REVIEW":
+        for agent in ("agent2", "agent5"):
+            if str(agents.get(agent, {}).get("status") or "idle") == "idle":
+                agents[agent] = {"status": "paused", "action": "Human review", "evidence": 0}
+        return
+    if "agent1" in agents and str(agents["agent1"].get("status") or "idle") == "idle":
+        agents["agent1"] = {"status": "paused", "action": str(pause.get("message") or action), "evidence": 0}
+
+
+SETTINGS_PROBE_TIMEOUT_S = 15.0
 
 
 async def _probe_openai_compatible_endpoint(endpoint: str, model: str, api_key: str) -> dict[str, bool | str]:
@@ -531,14 +654,14 @@ async def _probe_openai_compatible_endpoint(endpoint: str, model: str, api_key: 
         "temperature": 0,
     }
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=SETTINGS_PROBE_TIMEOUT_S) as client:
             response = await client.post(
                 f"{base}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json=payload,
             )
     except httpx.TimeoutException:
-        return {"ok": False, "message": "Network timeout: endpoint did not respond within 5s."}
+        return {"ok": False, "message": f"Network timeout: endpoint did not respond within {int(SETTINGS_PROBE_TIMEOUT_S)}s."}
     except httpx.ConnectError:
         return {"ok": False, "message": "Network error: cannot connect to endpoint. Check whether 9Router is running."}
     except httpx.RequestError as exc:

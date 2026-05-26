@@ -3,6 +3,8 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "17 19 * * *"
 
 jobs:
   test:
@@ -42,6 +44,17 @@ jobs:
       - name: Python tests
         shell: pwsh
         run: python -m pytest -q
+
+      - name: Agent1 V7.2 signoff benchmark smoke
+        shell: pwsh
+        run: |
+          python -m semiconductor_swarm.agents.agent1_signoff.benchmark --output-dir "${{ runner.temp }}\agent1-v72-balanced" --profile balanced --smoke --force
+          python -m semiconductor_swarm.agents.agent1_signoff.benchmark --output-dir "${{ runner.temp }}\agent1-v72-strict" --profile strict --smoke --force
+
+      - name: Agent1 V7.2 nightly signoff corpus
+        if: github.event_name == 'schedule'
+        shell: pwsh
+        run: python -m semiconductor_swarm.agents.agent1_signoff.benchmark --output-dir "${{ runner.temp }}\agent1-v72-nightly" --profile nightly --full --force
 
       - name: Frontend smoke tests
         shell: pwsh

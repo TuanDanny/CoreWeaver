@@ -40,7 +40,7 @@ def test_scoreboard_and_coverage_reports_are_machine_readable():
 
 
 def test_wrong_apb_port_name_fails_before_sim():
-    spec = generate_architecture_spec("SPI controller 50MHz", "spi_ctrl")
+    spec = generate_architecture_spec("Timer APB controller 50MHz", "timer_ctrl")
     rtl = generate_rtl_files(spec)
     bad_rtl = _replace_block_rtl(rtl, "timer", "psel_i", "pselect_i")
 
@@ -49,7 +49,7 @@ def test_wrong_apb_port_name_fails_before_sim():
 
 
 def test_width_mismatch_fails_static_contract():
-    spec = generate_architecture_spec("SPI controller 50MHz", "spi_ctrl")
+    spec = generate_architecture_spec("Timer APB controller 50MHz", "timer_ctrl")
     rtl = generate_rtl_files(spec)
     bad_rtl = _replace_block_rtl(rtl, "timer", "output logic [DATA_WIDTH-1:0] prdata_o", "output logic                  prdata_o")
 

@@ -16,6 +16,7 @@ SWARM_LLM_CONFIG: dict[str, Any] = {
     "fallback_api_key_env": "AGENT1_CODEX_API_KEY",
     "timeout_s": 120,
     "temperature": 0.2,
+    "max_tokens": 1536,
     "max_retries": 2,
 }
 
@@ -28,6 +29,12 @@ def resolve_swarm_llm_config(overrides: dict[str, Any] | None = None) -> dict[st
     api_key = os.environ.get(str(cfg["api_key_env"])) or os.environ.get(str(cfg["fallback_api_key_env"])) or cfg.get("api_key")
     if api_key:
         cfg["api_key"] = api_key
+    max_tokens = os.environ.get("SWARM_LLM_MAX_TOKENS")
+    if max_tokens:
+        try:
+            cfg["max_tokens"] = int(max_tokens)
+        except ValueError:
+            pass
     return cfg
 
 

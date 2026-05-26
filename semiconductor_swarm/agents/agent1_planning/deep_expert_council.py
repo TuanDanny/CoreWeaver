@@ -7,6 +7,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from semiconductor_swarm.agents.agent1_planning.ai_expert_council import _extract_intents
@@ -21,9 +22,11 @@ from semiconductor_swarm.agents.agent1_planning.architect import (
 from semiconductor_swarm.agents.agent1_planning.context_provider import Agent1ContextProvider
 from semiconductor_swarm.live_inputs import consume_live_inputs_for_requirement
 from semiconductor_swarm.runtime_events import emit_runtime_event
-from semiconductor_swarm.tracing import TRACE_FILES, trace_event
+from semiconductor_swarm.tracing import TRACE_FILES, trace_debug_issue, trace_event
 
 CodexCall = Callable[..., Any]
+TOPOLOGY_MANIFEST_PATH = Path(__file__).with_name("agent1_topology_manifest.json")
+DEFAULT_COUNCIL_MODE = os.getenv("AGENT1_COUNCIL_MODE", "group_session")
 
 
 @dataclass(frozen=True)
@@ -92,11 +95,16 @@ PRINCIPAL_ARCHITECT = ExpertNode(
 @dataclass(frozen=True)
 class Agent1CouncilConfig:
     planning_mode: str = "normal"
+    council_mode: str = DEFAULT_COUNCIL_MODE
     min_iterations: int | None = None
     max_iterations: int = 7
     max_concurrent_leaf_calls: int = int(os.getenv("AGENT1_MAX_CONCURRENT_LEAF_CALLS", "8"))
     max_concurrent_middle_calls: int = int(os.getenv("AGENT1_MAX_CONCURRENT_MIDDLE_CALLS", "4"))
+    max_concurrent_group_calls: int = int(os.getenv("AGENT1_MAX_CONCURRENT_GROUP_CALLS", "2"))
     expert_call_timeout_s: float | None = None
+    leaf_transient_max_retries: int = int(os.getenv("AGENT1_LEAF_TRANSIENT_MAX_RETRIES", "1"))
+    leaf_retry_backoff_s: float = float(os.getenv("AGENT1_LEAF_RETRY_BACKOFF_S", "0.05"))
+    group_infra_failure_hitl_threshold: int = int(os.getenv("AGENT1_GROUP_INFRA_FAILURE_HITL_THRESHOLD", "2"))
 
     def resolved_min_iterations(self) -> int:
         if self.min_iterations is not None:
@@ -106,29 +114,99 @@ class Agent1CouncilConfig:
     def normalized(self) -> "Agent1CouncilConfig":
         if self.planning_mode not in {"normal", "deep_planning"}:
             raise ValueError(f"Unsupported Agent1 V5.1 planning mode: {self.planning_mode}")
+        if self.council_mode not in {"legacy", "group_session"}:
+            raise ValueError(f"Unsupported Agent1 council mode: {self.council_mode}")
         return Agent1CouncilConfig(
             planning_mode=self.planning_mode,
+            council_mode=self.council_mode,
             min_iterations=max(1, self.resolved_min_iterations()),
             max_iterations=max(1, self.max_iterations),
             max_concurrent_leaf_calls=_clamp_int(self.max_concurrent_leaf_calls, 1, len(LEAF_EXPERTS)),
             max_concurrent_middle_calls=_clamp_int(self.max_concurrent_middle_calls, 1, len(MIDDLE_MANAGERS)),
+            max_concurrent_group_calls=_clamp_int(self.max_concurrent_group_calls, 1, len(MIDDLE_MANAGERS)),
             expert_call_timeout_s=self.expert_call_timeout_s,
+            leaf_transient_max_retries=_clamp_int(self.leaf_transient_max_retries, 0, 3),
+            leaf_retry_backoff_s=max(0.0, float(self.leaf_retry_backoff_s)),
+            group_infra_failure_hitl_threshold=_clamp_int(self.group_infra_failure_hitl_threshold, 1, len(MIDDLE_MANAGERS)),
         )
 
 
+def load_topology_manifest(path: str | Path | None = None) -> dict[str, Any]:
+    manifest_path = Path(path) if path else TOPOLOGY_MANIFEST_PATH
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Agent1 topology manifest must be a JSON object")
+    return payload
+
+def topology_manifest_hash(manifest: dict[str, Any] | None = None) -> str:
+    payload = manifest or load_topology_manifest()
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+def validate_topology_manifest(manifest: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = manifest or load_topology_manifest()
+    failures: list[str] = []
+    if payload.get("schema_version") != "agent1.topology_manifest.v1":
+        failures.append("schema_version")
+    if not payload.get("topology_version"):
+        failures.append("topology_version")
+    principal = payload.get("principal") if isinstance(payload.get("principal"), dict) else {}
+    if not principal.get("expert_id"):
+        failures.append("principal_missing")
+    leaves = payload.get("leaf_experts") if isinstance(payload.get("leaf_experts"), list) else []
+    groups = payload.get("groups") if isinstance(payload.get("groups"), list) else []
+    leaf_ids = [str(item.get("expert_id") or "") for item in leaves if isinstance(item, dict)]
+    manager_ids = [str(item.get("manager_id") or "") for item in groups if isinstance(item, dict)]
+    if len(set(leaf_ids)) != len(leaf_ids):
+        failures.append("duplicate_leaf_ids")
+    if len(set(manager_ids)) != len(manager_ids):
+        failures.append("duplicate_manager_ids")
+    known_leaves = set(leaf_ids)
+    covered: list[str] = []
+    for group in groups:
+        if not isinstance(group, dict):
+            failures.append("invalid_group")
+            continue
+        if not group.get("manager_id"):
+            failures.append("group_manager_missing")
+        for leaf_id in group.get("leaf_expert_ids") or []:
+            leaf_text = str(leaf_id)
+            covered.append(leaf_text)
+            if leaf_text not in known_leaves:
+                failures.append(f"unknown_leaf_ref:{leaf_text}")
+    if known_leaves - set(covered):
+        failures.append("leaf_without_group")
+    return {
+        "pass": not failures,
+        "failures": sorted(set(failures)),
+        "topology_version": str(payload.get("topology_version") or ""),
+        "leaf_count": len(leaf_ids),
+        "middle_count": len(manager_ids),
+        "principal_count": 1 if principal.get("expert_id") else 0,
+        "topology_hash": topology_manifest_hash(payload),
+    }
+
 def topology_manifest(config: Agent1CouncilConfig | None = None) -> dict[str, Any]:
     cfg = (config or Agent1CouncilConfig()).normalized()
+    registry = load_topology_manifest()
     return {
         "schema_version": "agent1.deep_council_config.v1",
         "planning_mode": cfg.planning_mode,
+        "council_mode": cfg.council_mode,
         "min_iterations": cfg.resolved_min_iterations(),
         "max_iterations": cfg.max_iterations,
         "max_concurrent_leaf_calls": cfg.max_concurrent_leaf_calls,
         "max_concurrent_middle_calls": cfg.max_concurrent_middle_calls,
+        "max_concurrent_group_calls": cfg.max_concurrent_group_calls,
+        "leaf_transient_max_retries": cfg.leaf_transient_max_retries,
+        "leaf_retry_backoff_s": cfg.leaf_retry_backoff_s,
+        "group_infra_failure_hitl_threshold": cfg.group_infra_failure_hitl_threshold,
+        "topology_version": registry.get("topology_version"),
+        "topology_hash": topology_manifest_hash(registry),
         "leaf_experts": [asdict(item) for item in LEAF_EXPERTS],
         "middle_managers": [asdict(item) for item in MIDDLE_MANAGERS],
         "principal_architect": asdict(PRINCIPAL_ARCHITECT),
-        "planned_calls_per_iteration": planned_calls_per_iteration(),
+        "planned_calls_per_iteration": planned_calls_per_iteration(cfg),
         "minimum_planned_calls": planned_minimum_calls(cfg),
     }
 
@@ -137,19 +215,23 @@ def cluster_map() -> dict[str, tuple[str, ...]]:
     return {manager.manager_id: manager.leaf_expert_ids for manager in MIDDLE_MANAGERS}
 
 
-def planned_calls_per_iteration() -> int:
+def planned_calls_per_iteration(config: Agent1CouncilConfig | None = None) -> int:
+    cfg = (config or Agent1CouncilConfig()).normalized()
+    if cfg.council_mode == "group_session":
+        return 1 + len(MIDDLE_MANAGERS) + 1
     return 1 + len(MIDDLE_MANAGERS) + len(LEAF_EXPERTS) + len(MIDDLE_MANAGERS) + 1
 
 
 def planned_minimum_calls(config: Agent1CouncilConfig | None = None) -> int:
     cfg = (config or Agent1CouncilConfig()).normalized()
-    return planned_calls_per_iteration() * cfg.resolved_min_iterations()
+    return planned_calls_per_iteration(cfg) * cfg.resolved_min_iterations()
 
 
 def validate_topology() -> dict[str, Any]:
+    manifest_report = validate_topology_manifest()
     leaf_ids = [item.expert_id for item in LEAF_EXPERTS]
     covered = [leaf_id for manager in MIDDLE_MANAGERS for leaf_id in manager.leaf_expert_ids]
-    failures = []
+    failures = list(manifest_report.get("failures", []))
     if len(LEAF_EXPERTS) != 24:
         failures.append("leaf_expert_count")
     if len(MIDDLE_MANAGERS) != 7:
@@ -160,8 +242,85 @@ def validate_topology() -> dict[str, Any]:
         failures.append("cluster_map_leaf_coverage")
     if len(set(covered)) != len(covered):
         failures.append("cluster_map_duplicate_leaf")
-    return {"pass": not failures, "failures": failures, "leaf_count": len(LEAF_EXPERTS), "middle_count": len(MIDDLE_MANAGERS), "principal_count": 1}
+    return {
+        "pass": not failures,
+        "failures": failures,
+        "leaf_count": len(LEAF_EXPERTS),
+        "middle_count": len(MIDDLE_MANAGERS),
+        "principal_count": 1,
+        "topology_version": manifest_report.get("topology_version", ""),
+        "topology_hash": manifest_report.get("topology_hash", ""),
+    }
 
+
+def route_agent1_clusters(
+    requirement: str,
+    *,
+    config: Agent1CouncilConfig | None = None,
+    manifest: dict[str, Any] | None = None,
+    iteration: int = 1,
+    intake_report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    cfg = (config or Agent1CouncilConfig()).normalized()
+    topology = manifest or load_topology_manifest()
+    leaf_by_id = {
+        str(item.get("expert_id")): item
+        for item in topology.get("leaf_experts", [])
+        if isinstance(item, dict) and item.get("expert_id")
+    }
+    group_items = [item for item in topology.get("groups", []) if isinstance(item, dict)]
+    text = _routing_text(requirement, intake_report)
+    assignments: list[dict[str, Any]] = []
+    for group in group_items:
+        group_id = str(group.get("manager_id") or "")
+        default_leaf_ids = [str(item) for item in group.get("leaf_expert_ids") or []]
+        group_tags = [str(item).lower() for item in group.get("tags") or []]
+        matched_keywords = sorted({tag for tag in group_tags if tag and tag in text})
+        score = len(matched_keywords) * 3
+        leaf_hits: dict[str, list[str]] = {}
+        for leaf_id in default_leaf_ids:
+            hits = _leaf_keyword_hits(leaf_by_id.get(leaf_id, {}), text)
+            if hits:
+                leaf_hits[leaf_id] = hits
+                score += len(hits)
+        guest_ids: list[str] = []
+        guest_candidates = _guest_candidates_for_group(group_id)
+        if group.get("guest_expert_eligible", True):
+            for leaf_id in guest_candidates:
+                if leaf_id in default_leaf_ids or leaf_id not in leaf_by_id:
+                    continue
+                hits = _leaf_keyword_hits(leaf_by_id[leaf_id], text)
+                if hits:
+                    guest_ids.append(leaf_id)
+                    leaf_hits[leaf_id] = hits
+                    score += len(hits)
+        assignments.append(
+            {
+                "group_id": group_id,
+                "manager_id": group_id,
+                "title": str(group.get("title") or group_id),
+                "domain": str(group.get("domain") or ""),
+                "default_leaf_expert_ids": default_leaf_ids,
+                "leaf_expert_ids": default_leaf_ids,
+                "guest_expert_ids": guest_ids[:3],
+                "all_expert_ids": [*default_leaf_ids, *guest_ids[:3]],
+                "matched_keywords": matched_keywords,
+                "leaf_keyword_hits": leaf_hits,
+                "score": score,
+                "rationale": _cluster_rationale(group_id, matched_keywords, guest_ids[:3], score),
+            }
+        )
+    assignment = {
+        "schema_version": "agent1.cluster_assignment.v1",
+        "mode": cfg.council_mode,
+        "iteration": iteration,
+        "topology_version": str(topology.get("topology_version") or ""),
+        "topology_hash": topology_manifest_hash(topology),
+        "requirement_sha256": _sha256(requirement),
+        "groups": assignments,
+    }
+    assignment["cluster_assignment_hash"] = _sha256(json.dumps(assignment, sort_keys=True, ensure_ascii=False))
+    return assignment
 
 def execute_leaf_experts(
     requirement: str,
@@ -260,6 +419,83 @@ def execute_middle_tasking(
     return sorted(records, key=lambda item: item["manager_id"])
 
 
+def execute_group_sessions(
+    requirement: str,
+    project_name: str,
+    codex_call: CodexCall,
+    charter_record: dict[str, Any],
+    assignment: dict[str, Any],
+    *,
+    config: Agent1CouncilConfig | None = None,
+    iteration: int = 1,
+    context_provider: Agent1ContextProvider | None = None,
+    feedback: dict[str, Any] | None = None,
+    intake_report: dict[str, Any] | None = None,
+    parent_span_id: str = "",
+    attempt: int = 1,
+) -> list[dict[str, Any]]:
+    cfg = (config or Agent1CouncilConfig()).normalized()
+    provider = context_provider or Agent1ContextProvider()
+    groups = tuple(assignment.get("groups") or [])
+    _emit_batch_event("Group Sessions", "started", iteration, total=len(groups), max_workers=cfg.max_concurrent_group_calls)
+    records: list[dict[str, Any]] = []
+    width = max(1, cfg.max_concurrent_group_calls)
+    for batch_start in range(0, len(groups), width):
+        batch = groups[batch_start : batch_start + width]
+        records.extend(
+            _run_parallel_nodes(
+                nodes=batch,
+                max_workers=width,
+                call_builder=lambda group: _call_group_session(
+                    group,
+                    requirement,
+                    project_name,
+                    codex_call,
+                    cfg,
+                    iteration,
+                    charter_record,
+                    provider,
+                    feedback or {},
+                    intake_report,
+                    parent_span_id,
+                    attempt,
+                ),
+            )
+        )
+        infra_failures = _group_infra_failure_ids(records)
+        if len(infra_failures) >= cfg.group_infra_failure_hitl_threshold and batch_start + width < len(groups):
+            remaining = groups[batch_start + width :]
+            trace_debug_issue(
+                severity="error",
+                source="agent1",
+                code="agent1_group_infra_hard_stop",
+                message="Agent 1 group-session council hit infrastructure failure threshold; remaining groups were not sent to the model.",
+                details={
+                    "iteration": iteration,
+                    "failed_group_ids": infra_failures,
+                    "threshold": cfg.group_infra_failure_hitl_threshold,
+                    "skipped_group_ids": [str(group.get("group_id") or group.get("manager_id") or "") for group in remaining],
+                },
+                node_id="AGENT1.GROUP_SESSIONS",
+            )
+            for group in remaining:
+                records.append(
+                    _group_session_infra_aborted_record(
+                        group,
+                        requirement,
+                        project_name,
+                        cfg,
+                        iteration,
+                        parent_span_id,
+                        attempt,
+                        failed_group_ids=infra_failures,
+                    )
+                )
+            break
+    failed = sum(1 for record in records if _group_session_failed(record))
+    _emit_batch_event("Group Sessions", "completed", iteration, total=len(groups), max_workers=cfg.max_concurrent_group_calls, completed=len(records), failed=failed)
+    return sorted(records, key=lambda item: item["manager_id"])
+
 def run_agent1_v51_council(
     requirement: str,
     project_name: str,
@@ -271,6 +507,15 @@ def run_agent1_v51_council(
 ) -> dict[str, Any]:
     cfg = (config or Agent1CouncilConfig()).normalized()
     provider = context_provider or Agent1ContextProvider()
+    if cfg.council_mode == "group_session":
+        return _run_agent1_group_session_council(
+            requirement,
+            project_name,
+            codex_call,
+            config=cfg,
+            context_provider=provider,
+            intake_report=intake_report,
+        )
     iterations = []
     leaf_trace: list[dict[str, Any]] = []
     middle_tasking_trace: list[dict[str, Any]] = []
@@ -517,6 +762,423 @@ def run_agent1_v51_council(
     }
 
 
+def _run_agent1_group_session_council(
+    requirement: str,
+    project_name: str,
+    codex_call: CodexCall,
+    *,
+    config: Agent1CouncilConfig,
+    context_provider: Agent1ContextProvider,
+    intake_report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    cfg = config.normalized()
+    provider = context_provider
+    iterations = []
+    group_trace: list[dict[str, Any]] = []
+    principal_charter_trace: list[dict[str, Any]] = []
+    principal_trace: list[dict[str, Any]] = []
+    guardrail_trace: list[dict[str, Any]] = []
+    retry_trace: list[dict[str, Any]] = []
+    challenge_matrices: list[dict[str, Any]] = []
+    assignment_trace: list[dict[str, Any]] = []
+    infra_hard_stop_seen = False
+    feedback: dict[str, Any] = {}
+    topology = load_topology_manifest()
+    topology_hash = topology_manifest_hash(topology)
+    root_span = "agent1.cluster_council"
+    _emit_agent1_event(
+        "agent1_council_mode_selected",
+        phase="planning",
+        status="pass",
+        mode="group_session",
+        span_id=root_span,
+        summary=f"Agent 1 group-session council selected; planned_calls_per_iteration={planned_calls_per_iteration(cfg)}",
+        metric={"planned_calls_per_iteration": planned_calls_per_iteration(cfg), "max_concurrent_group_calls": cfg.max_concurrent_group_calls},
+    )
+    _emit_agent1_event(
+        "agent1_topology_loaded",
+        phase="planning",
+        status="pass",
+        span_id=f"{root_span}.topology",
+        parent_span_id=root_span,
+        topology_hash=topology_hash,
+        topology_version=topology.get("topology_version"),
+        summary=f"Topology loaded: groups={len(topology.get('groups', []))}; leaves={len(topology.get('leaf_experts', []))}",
+    )
+    for iteration in range(1, cfg.max_iterations + 1):
+        requirement, consumed = consume_live_inputs_for_requirement(requirement, f"agent1.council.iteration.{iteration}.start")
+        if consumed:
+            trace_event(
+                TRACE_FILES["agent1_council"],
+                phase="planning",
+                agent="agent1",
+                node_id="LIVE_INPUT.CONSUME",
+                event_type="live_input_checkpoint",
+                status="pass",
+                payload={"checkpoint": f"agent1.council.iteration.{iteration}.start", "count": len(consumed)},
+            )
+        iteration_span = f"{root_span}.iter{iteration}"
+        router_span = f"{iteration_span}.router"
+        _emit_agent1_event(
+            "agent_action",
+            phase="planning",
+            action=f"V7.1 group-session iteration {iteration} started",
+            status="running",
+            summary=f"Mode={cfg.planning_mode}; groups={len(MIDDLE_MANAGERS)}; max_group_workers={cfg.max_concurrent_group_calls}",
+            rollup_stage="Iteration",
+            iteration=iteration,
+        )
+        _emit_agent1_event(
+            "agent1_council_iteration",
+            phase="planning",
+            action="group-session iteration started",
+            status="running",
+            iteration=iteration,
+            layer="iteration",
+            node_id=f"I{iteration}",
+            title=f"Iteration {iteration}",
+            phase_seq=_phase_seq(iteration, "iteration", "start"),
+            summary=f"Group-session mode; groups={len(MIDDLE_MANAGERS)}",
+        )
+        charter_record = execute_principal_charter(
+            requirement,
+            project_name,
+            codex_call,
+            config=cfg,
+            iteration=iteration,
+            context_provider=provider,
+            feedback=feedback,
+            intake_report=intake_report,
+        )
+        principal_charter_trace.append(charter_record)
+        assignment = route_agent1_clusters(requirement, config=cfg, manifest=topology, iteration=iteration, intake_report=intake_report)
+        assignment_trace.append(assignment)
+        _emit_agent1_event(
+            "agent1_cluster_assignment",
+            phase="planning",
+            status="pass",
+            span_id=router_span,
+            parent_span_id=root_span,
+            iteration=iteration,
+            topology_hash=assignment["topology_hash"],
+            cluster_assignment_hash=assignment["cluster_assignment_hash"],
+            group_count=len(assignment.get("groups", [])),
+            summary=f"Cluster router assigned {len(assignment.get('groups', []))} group sessions.",
+            metric={"group_count": len(assignment.get("groups", []))},
+        )
+        group_records = execute_group_sessions(
+            requirement,
+            project_name,
+            codex_call,
+            charter_record,
+            assignment,
+            config=cfg,
+            iteration=iteration,
+            context_provider=provider,
+            feedback={**feedback, "principal_charter": charter_record.get("output", {}), "intake_router": _compact_intake_report(intake_report)},
+            intake_report=intake_report,
+            parent_span_id=router_span,
+        )
+        infra_failures = _group_infra_failure_ids(group_records)
+        infra_hard_stop = len(infra_failures) >= cfg.group_infra_failure_hitl_threshold
+        retry_targets = [] if infra_failures else _group_retry_targets(group_records)
+        if infra_failures:
+            _emit_group_retry_suppressed(infra_failures, iteration, parent_span_id=router_span, reason="codex_infra_failure")
+        if retry_targets:
+            retry_records = _retry_group_sessions(
+                retry_targets,
+                group_records,
+                requirement,
+                project_name,
+                codex_call,
+                charter_record,
+                assignment,
+                cfg,
+                iteration,
+                provider,
+                feedback={**feedback, "retry_reason": "group_session_quality_gate"},
+                intake_report=intake_report,
+                parent_span_id=router_span,
+            )
+            retry_trace.extend(retry_records)
+            group_records = _replace_group_records(group_records, retry_records)
+        challenge_matrix = _cross_group_challenge_matrix(iteration, group_records)
+        challenge_matrices.append(challenge_matrix)
+        _emit_cross_group_challenges(challenge_matrix, iteration, parent_span_id=router_span)
+        requirement, consumed = consume_live_inputs_for_requirement(requirement, f"agent1.council.iteration.{iteration}.principal")
+        if consumed:
+            trace_event(
+                TRACE_FILES["agent1_council"],
+                phase="planning",
+                agent="agent1",
+                node_id="LIVE_INPUT.CONSUME",
+                event_type="live_input_checkpoint",
+                status="pass",
+                payload={"checkpoint": f"agent1.council.iteration.{iteration}.principal", "count": len(consumed)},
+            )
+        review_span = f"{iteration_span}.principal_review"
+        _emit_agent1_event(
+            "agent1_principal_group_review",
+            phase="planning",
+            status="running",
+            span_id=review_span,
+            parent_span_id=router_span,
+            iteration=iteration,
+            group_count=len(group_records),
+            summary="Principal reviewing distilled group-session outputs.",
+        )
+        principal_record = execute_principal_architect(
+            requirement,
+            project_name,
+            codex_call,
+            group_records,
+            config=cfg,
+            iteration=iteration,
+            context_provider=provider,
+            feedback={
+                **feedback,
+                "principal_charter": charter_record.get("output", {}),
+                "cross_group_challenge_matrix": _digest_value(challenge_matrix),
+                "intake_router": _compact_intake_report(intake_report),
+            },
+        )
+        principal_retry_targets = _principal_retry_targets(principal_record, assignment)
+        infra_failures = _group_infra_failure_ids(group_records)
+        if principal_retry_targets and infra_failures:
+            _emit_group_retry_suppressed(principal_retry_targets, iteration, parent_span_id=review_span, reason="codex_infra_failure_after_principal")
+            principal_retry_targets = []
+        if principal_retry_targets:
+            retry_records = _retry_group_sessions(
+                principal_retry_targets,
+                group_records,
+                requirement,
+                project_name,
+                codex_call,
+                charter_record,
+                assignment,
+                cfg,
+                iteration,
+                provider,
+                feedback={**feedback, "principal_feedback": principal_record.get("output", {})},
+                intake_report=intake_report,
+                parent_span_id=review_span,
+            )
+            retry_trace.extend(retry_records)
+            group_records = _replace_group_records(group_records, retry_records)
+            challenge_matrix = _cross_group_challenge_matrix(iteration, group_records)
+            challenge_matrices[-1] = challenge_matrix
+            principal_record = execute_principal_architect(
+                requirement,
+                project_name,
+                codex_call,
+                group_records,
+                config=cfg,
+                iteration=iteration,
+                context_provider=provider,
+                feedback={
+                    **feedback,
+                    "principal_retry": True,
+                    "principal_feedback": principal_record.get("output", {}),
+                    "cross_group_challenge_matrix": _digest_value(challenge_matrix),
+                },
+            )
+        _emit_agent1_event(
+            "agent1_principal_group_review",
+            phase="planning",
+            status="fail" if principal_record["conflicts"] else "pass",
+            span_id=f"{review_span}.done",
+            parent_span_id=review_span,
+            iteration=iteration,
+            group_count=len(group_records),
+            confidence=principal_record.get("output", {}).get("confidence"),
+            summary=str(principal_record.get("output", {}).get("summary", "Principal group review completed."))[:600],
+            metric=_token_metrics(principal_record),
+        )
+        principal_trace.append(principal_record)
+        conflicts = _conflict_matrix(iteration, [], group_records, principal_record, extra_records=[charter_record], requirement=requirement)
+        unresolved_challenges = [item for item in challenge_matrix.get("challenges", []) if not item.get("resolved")]
+        if unresolved_challenges:
+            conflicts["critical_conflicts"].append(
+                {
+                    "source": "agent1_cross_group_challenge_matrix",
+                    "severity": "critical",
+                    "type": "unresolved_cross_group_challenge",
+                    "challenge_ids": [item.get("challenge_id") for item in unresolved_challenges],
+                }
+            )
+        guardrail = _run_deterministic_guardrails(requirement, project_name, principal_record, cfg, iteration)
+        guardrail_trace.append(guardrail)
+        if not guardrail["pass"]:
+            conflicts["critical_conflicts"].append(
+                {
+                    "source": "deterministic_guardrails",
+                    "severity": "critical",
+                    "type": "deterministic_guardrail_failed",
+                    "failures": guardrail["failures"],
+                }
+            )
+        group_trace.extend(group_records)
+        iterations.append(
+            {
+                "iteration": iteration,
+                "principal_charter_records": 1,
+                "group_session_records": len(group_records),
+                "middle_records": len(group_records),
+                "leaf_records": 0,
+                "principal_records": 1,
+                "retry_records": len([item for item in retry_trace if item.get("iteration") == iteration]),
+                "guardrail_pass": guardrail["pass"],
+                "guardrail_failures": guardrail["failures"],
+                "critical_conflicts": conflicts["critical_conflicts"],
+                "noncritical_conflicts": conflicts["noncritical_conflicts"],
+                "unresolved_challenges": unresolved_challenges,
+                "status": "pass" if not conflicts["critical_conflicts"] else "conflict",
+            }
+        )
+        _emit_agent1_event(
+            "agent_discussion",
+            speaker="agent1",
+            audience="principal_architect",
+            message=f"Group-session iteration {iteration} completed with {len(conflicts['critical_conflicts'])} critical and {len(conflicts['noncritical_conflicts'])} noncritical conflicts.",
+            severity="warning" if conflicts["critical_conflicts"] else "info",
+            iteration=iteration,
+        )
+        _emit_agent1_event(
+            "agent_action",
+            phase="planning",
+            action=f"V7.1 group-session iteration {iteration} completed",
+            status="fail" if conflicts["critical_conflicts"] else "pass",
+            summary=f"critical={len(conflicts['critical_conflicts'])}, noncritical={len(conflicts['noncritical_conflicts'])}, retries={iterations[-1]['retry_records']}",
+            rollup_stage="Iteration",
+            iteration=iteration,
+            metric={"critical_conflicts": len(conflicts["critical_conflicts"]), "noncritical_conflicts": len(conflicts["noncritical_conflicts"]), "retries": iterations[-1]["retry_records"]},
+        )
+        _emit_agent1_event(
+            "agent1_council_iteration",
+            phase="planning",
+            action="group-session iteration completed",
+            status="conflict" if conflicts["critical_conflicts"] else "pass",
+            iteration=iteration,
+            layer="iteration",
+            node_id=f"I{iteration}",
+            title=f"Iteration {iteration}",
+            phase_seq=_phase_seq(iteration, "iteration", "complete"),
+            summary=f"critical={len(conflicts['critical_conflicts'])}; noncritical={len(conflicts['noncritical_conflicts'])}; retries={iterations[-1]['retry_records']}",
+            conflicts=_digest_list(conflicts["critical_conflicts"] + conflicts["noncritical_conflicts"]),
+        )
+        feedback = {"principal": principal_record.get("output", {}), "conflicts": conflicts, "guardrail": guardrail}
+        if infra_hard_stop:
+            infra_hard_stop_seen = True
+            trace_debug_issue(
+                severity="error",
+                source="agent1",
+                code="agent1_council_infra_hard_stop",
+                message="Agent 1 deep council stopped after one iteration because group-session infrastructure failures reached HITL threshold.",
+                details={
+                    "iteration": iteration,
+                    "failed_group_ids": infra_failures,
+                    "threshold": cfg.group_infra_failure_hitl_threshold,
+                    "status": "HITL_REQUIRED",
+                },
+                node_id="AGENT1.V7_1_GROUP_SESSION_ITERATION",
+            )
+            break
+        if cfg.planning_mode == "normal":
+            break
+        if iteration >= cfg.resolved_min_iterations() and not conflicts["critical_conflicts"] and guardrail["pass"] and principal_record.get("output", {}).get("plan_ready_candidate") is not False:
+            break
+    guardrail = guardrail_trace[-1]
+    status = "HITL_REQUIRED" if iterations[-1]["critical_conflicts"] or not guardrail["pass"] else "READY_FOR_DETERMINISTIC_GUARDRAILS"
+    final_conflict_matrix = _conflict_matrix(iterations[-1]["iteration"], [], group_trace, principal_trace[-1], extra_records=principal_charter_trace, requirement=requirement)
+    if not guardrail["pass"]:
+        final_conflict_matrix["critical_conflicts"].append(
+            {
+                "source": "deterministic_guardrails",
+                "severity": "critical",
+                "type": "deterministic_guardrail_failed",
+                "failures": guardrail["failures"],
+            }
+        )
+    final_challenge_matrix = challenge_matrices[-1] if challenge_matrices else {"schema_version": "agent1.cross_group_challenge_matrix.v1", "challenges": []}
+    _emit_agent1_event(
+        "agent_handoff",
+        from_agent="agent1",
+        to_agent="agent1_guardrails",
+        contract="agent1_v71_group_session_guardrail_report",
+        status="pass" if guardrail["pass"] else "fail",
+        summary=f"Deterministic guardrails {'passed' if guardrail['pass'] else 'failed'} with {len(guardrail['failures'])} failures.",
+        iteration_count=len(iterations),
+    )
+    _emit_agent1_event(
+        "agent_action",
+        phase="planning",
+        action="V7.1 deterministic guardrails completed",
+        status="pass" if guardrail["pass"] else "fail",
+        summary=f"status={status}; failures={len(guardrail['failures'])}",
+        rollup_stage="Guardrails",
+        metric={"guardrail_failures": len(guardrail["failures"]), "iterations": len(iterations)},
+    )
+    _emit_council_node(
+        layer="guardrail",
+        node_id="G01",
+        title="Deterministic Guardrails",
+        status="pass" if guardrail["pass"] else "fail",
+        iteration=iterations[-1]["iteration"],
+        summary=f"Guardrails {'passed' if guardrail['pass'] else 'failed'} with {len(guardrail['failures'])} failures.",
+        child_ids=[PRINCIPAL_ARCHITECT.expert_id],
+        conflicts=[{"severity": "critical", "type": failure} for failure in guardrail["failures"]],
+        phase_seq=_phase_seq(iterations[-1]["iteration"], "guardrail", "complete", "G01"),
+    )
+    for artifact_name in (
+        "agent1_cluster_assignment.json",
+        "agent1_group_session_trace.jsonl",
+        "agent1_cross_group_challenge_matrix.json",
+        "agent1_principal_trace.jsonl",
+        "agent1_conflict_matrix.json",
+        "agent1_v51_guardrail_report.json",
+    ):
+        _emit_agent1_event(
+            "agent1_council_artifact",
+            phase="planning",
+            status="available",
+            iteration=iterations[-1]["iteration"],
+            layer="artifact",
+            node_id=artifact_name,
+            title=artifact_name,
+            phase_seq=_phase_seq(iterations[-1]["iteration"], "artifact", "available", artifact_name),
+            summary=f"Agent 1 debug artifact available: {artifact_name}",
+        )
+    return {
+        "schema_version": "agent1.deep_council_result.v1",
+        "project_name": project_name,
+        "raw_requirement": requirement,
+        "effective_requirement": requirement,
+        "config": topology_manifest(cfg),
+        "iterations": iterations,
+        "status": status,
+        "hitl_reason": "agent1_council_infra_hard_stop" if infra_hard_stop_seen else "council_conflict",
+        "artifacts": {
+            "agent1_deep_council_config.json": json.dumps(topology_manifest(cfg), indent=2, sort_keys=True),
+            "agent1_cluster_assignment.json": json.dumps(assignment_trace[-1] if assignment_trace else {}, indent=2, sort_keys=True),
+            "agent1_group_session_trace.jsonl": _jsonl(sorted(group_trace, key=lambda item: (item["iteration"], item["manager_id"], item.get("attempt", 1)))),
+            "agent1_group_retry_trace.jsonl": _jsonl(sorted(retry_trace, key=lambda item: (item["iteration"], item["manager_id"], item.get("attempt", 1)))),
+            "agent1_cross_group_challenge_matrix.json": json.dumps(final_challenge_matrix, indent=2, sort_keys=True),
+            "agent1_principal_charter_trace.jsonl": _jsonl(sorted(principal_charter_trace, key=lambda item: (item["iteration"], item["principal_id"]))),
+            "agent1_middle_tasking_trace.jsonl": "",
+            "agent1_leaf_expert_trace.jsonl": "",
+            "agent1_middle_manager_trace.jsonl": _jsonl(sorted(group_trace, key=lambda item: (item["iteration"], item["manager_id"], item.get("attempt", 1)))),
+            "agent1_principal_trace.jsonl": _jsonl(sorted(principal_trace, key=lambda item: (item["iteration"], item["principal_id"]))),
+            "agent1_conflict_matrix.json": json.dumps(final_conflict_matrix, indent=2, sort_keys=True),
+            "agent1_iteration_summary.json": json.dumps(iterations, indent=2, sort_keys=True),
+            "agent1_principal_decision.json": json.dumps(principal_trace[-1], indent=2, sort_keys=True),
+            "agent1_v51_guardrail_trace.jsonl": _jsonl(guardrail_trace),
+            "agent1_rag_context_manifest.json": json.dumps(_context_manifest(provider, requirement, project_name), indent=2, sort_keys=True),
+            "agent1_v51_guardrail_report.json": json.dumps(guardrail, indent=2, sort_keys=True),
+            "agent1_v51_architecture_spec.json": json.dumps(guardrail.get("spec", {}), indent=2, sort_keys=True),
+            "architecture_plan.md": guardrail.get("plan_markdown", ""),
+        },
+    }
+
 def execute_middle_managers(
     requirement: str,
     project_name: str,
@@ -625,6 +1287,231 @@ def _run_parallel_nodes(nodes: tuple[Any, ...], max_workers: int, call_builder: 
     return records
 
 
+def _group_session_infra_aborted_record(
+    group: dict[str, Any],
+    requirement: str,
+    project_name: str,
+    config: Agent1CouncilConfig,
+    iteration: int,
+    parent_span_id: str,
+    attempt: int,
+    *,
+    failed_group_ids: list[str],
+) -> dict[str, Any]:
+    group_id = str(group.get("group_id") or group.get("manager_id") or "")
+    span_id = f"agent1.cluster.iter{iteration}.{group_id}.attempt{attempt}.infra_aborted"
+    leaf_ids = [str(item) for item in group.get("leaf_expert_ids") or []]
+    guest_ids = [str(item) for item in group.get("guest_expert_ids") or []]
+    all_experts = [*leaf_ids, *guest_ids]
+    model_call_id = _sha256(f"{span_id}:{project_name}:{_sha256(requirement)}")[:16]
+    message = "Group session skipped because prior Codex/API infrastructure failures reached the hard HITL threshold."
+    record_base = {
+        "record_type": "group_session",
+        "group_id": group_id,
+        "manager_id": group_id,
+        "title": str(group.get("title") or group_id),
+        "domain": str(group.get("domain") or ""),
+        "covered_experts": all_experts,
+        "leaf_expert_ids": leaf_ids,
+        "guest_expert_ids": guest_ids,
+        "iteration": iteration,
+        "attempt": attempt,
+        "span_id": span_id,
+        "model_call_id": model_call_id,
+        "cluster_rationale": group.get("rationale", ""),
+    }
+    _emit_agent1_event(
+        "agent1_group_session_start",
+        phase="planning",
+        status="skipped",
+        span_id=span_id,
+        parent_span_id=parent_span_id,
+        iteration=iteration,
+        group_id=group_id,
+        manager_id=group_id,
+        leaf_expert_ids=leaf_ids,
+        guest_expert_ids=guest_ids,
+        model_call_id=model_call_id,
+        attempt=attempt,
+        summary=message,
+    )
+    output = _normalize_layer_output(record_base, _fallback_output(record_base, message))
+    record = {
+        **record_base,
+        "output": output,
+        "evidence": {"error": message, "prompt_sha256": _sha256(requirement), "response_sha256": _sha256("")},
+        "prompt_sha256": _sha256(requirement),
+        "response_sha256": _sha256(""),
+        "latency_s": 0.0,
+        "token_usage": {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None, "estimated_cost_usd": None},
+        "parse_status": "infra_aborted",
+        "repair_attempted": False,
+        "repair_pass": False,
+        "retry_attempted": False,
+        "retry_count": 0,
+        "retry_errors": [],
+        "conflicts": [
+            {
+                "severity": "critical",
+                "type": "codex_call_failed",
+                "subtype": "agent1_group_infra_hard_stop",
+                "message": message,
+                "failed_group_ids": failed_group_ids,
+                "transient": True,
+            }
+        ],
+    }
+    _emit_agent1_event(
+        "agent1_group_session_failed",
+        phase="planning",
+        status="fail",
+        span_id=span_id,
+        parent_span_id=parent_span_id,
+        iteration=iteration,
+        group_id=group_id,
+        manager_id=group_id,
+        leaf_expert_ids=leaf_ids,
+        guest_expert_ids=guest_ids,
+        model_call_id=model_call_id,
+        attempt=attempt,
+        confidence=0.0,
+        summary=message,
+    )
+    _emit_council_node(
+        layer="group",
+        node_id=group_id,
+        title=str(group.get("title") or group_id),
+        status="fail",
+        iteration=iteration,
+        child_ids=all_experts,
+        conflicts=record["conflicts"],
+        summary=message,
+        phase_seq=_phase_seq(iteration, "group", "infra_aborted", f"{group_id}:{attempt}"),
+    )
+    return record
+
+def _call_group_session(
+    group: dict[str, Any],
+    requirement: str,
+    project_name: str,
+    codex_call: CodexCall,
+    config: Agent1CouncilConfig,
+    iteration: int,
+    charter_record: dict[str, Any],
+    provider: Agent1ContextProvider,
+    feedback: dict[str, Any],
+    intake_report: dict[str, Any] | None,
+    parent_span_id: str,
+    attempt: int,
+) -> dict[str, Any]:
+    group_id = str(group.get("group_id") or group.get("manager_id") or "")
+    span_id = f"agent1.cluster.iter{iteration}.{group_id}.attempt{attempt}"
+    leaf_ids = [str(item) for item in group.get("leaf_expert_ids") or []]
+    guest_ids = [str(item) for item in group.get("guest_expert_ids") or []]
+    all_experts = [*leaf_ids, *guest_ids]
+    model_call_id = _sha256(f"{span_id}:{project_name}:{_sha256(requirement)}")[:16]
+    context = provider.build_context_package(requirement, project_name, config.planning_mode, iteration, group_id, extracted_intents=_extract_intents(requirement))
+    prompt = _group_session_prompt(group, requirement, project_name, iteration, charter_record, context, feedback, intake_report)
+    _emit_agent1_event(
+        "agent1_group_session_start",
+        phase="planning",
+        status="running",
+        span_id=span_id,
+        parent_span_id=parent_span_id,
+        iteration=iteration,
+        group_id=group_id,
+        manager_id=group_id,
+        leaf_expert_ids=leaf_ids,
+        guest_expert_ids=guest_ids,
+        model_call_id=model_call_id,
+        attempt=attempt,
+        summary=f"{group_id} group session started with {len(all_experts)} experts.",
+    )
+    _emit_council_node(
+        layer="group",
+        node_id=group_id,
+        title=str(group.get("title") or group_id),
+        status="running",
+        iteration=iteration,
+        child_ids=all_experts,
+        summary=f"Group-session call attempt {attempt}; default={len(leaf_ids)} guest={len(guest_ids)}.",
+        phase_seq=_phase_seq(iteration, "group", "start", f"{group_id}:{attempt}"),
+    )
+    record = _call_codex_record(
+        codex_call,
+        prompt,
+        record_base={
+            "record_type": "group_session",
+            "group_id": group_id,
+            "manager_id": group_id,
+            "title": str(group.get("title") or group_id),
+            "domain": str(group.get("domain") or ""),
+            "covered_experts": all_experts,
+            "leaf_expert_ids": leaf_ids,
+            "guest_expert_ids": guest_ids,
+            "iteration": iteration,
+            "attempt": attempt,
+            "span_id": span_id,
+            "model_call_id": model_call_id,
+            "cluster_rationale": group.get("rationale", ""),
+        },
+    )
+    failed = _group_session_failed(record)
+    if failed and _is_group_infra_failure(record):
+        trace_debug_issue(
+            severity="error",
+            source="agent1",
+            code="agent1_group_session_infra_failure",
+            message=f"{group_id} group session failed because Codex/API call did not return usable evidence.",
+            details={
+                "iteration": iteration,
+                "group_id": group_id,
+                "manager_id": group_id,
+                "attempt": attempt,
+                "span_id": span_id,
+                "model_call_id": model_call_id,
+                "conflicts": record.get("conflicts", []),
+            },
+            node_id=f"AGENT1.GROUP_SESSION.{group_id}",
+        )
+    event_type = "agent1_group_session_failed" if failed else "agent1_group_session_done"
+    status = "fail" if failed else "pass"
+    _emit_agent1_event(
+        event_type,
+        phase="planning",
+        status=status,
+        span_id=span_id,
+        parent_span_id=parent_span_id,
+        iteration=iteration,
+        group_id=group_id,
+        manager_id=group_id,
+        leaf_expert_ids=leaf_ids,
+        guest_expert_ids=guest_ids,
+        model_call_id=model_call_id,
+        attempt=attempt,
+        confidence=record.get("output", {}).get("confidence"),
+        summary=str(record.get("output", {}).get("manager_summary") or record.get("output", {}).get("summary", f"{group_id} group completed."))[:600],
+        metric=_token_metrics(record),
+    )
+    _emit_council_node(
+        layer="group",
+        node_id=group_id,
+        title=str(group.get("title") or group_id),
+        status="conflict" if record["conflicts"] else "pass",
+        iteration=iteration,
+        child_ids=all_experts,
+        accepted_decisions=record.get("output", {}).get("accepted_decisions", []),
+        rejected_decisions=record.get("output", {}).get("rejected_decisions", []),
+        conflicts=[*_coerce_conflict_list(record.get("conflicts", [])), *_coerce_conflict_list(record.get("output", {}).get("internal_challenges", []))],
+        feedback_digest=record.get("output", {}).get("internal_challenges", []),
+        handoff_digest=record.get("output", {}).get("handoff_to_principal", ""),
+        token_usage=record.get("token_usage", {}),
+        duration_ms=_duration_ms(record),
+        summary=str(record.get("output", {}).get("manager_summary") or record.get("output", {}).get("summary", f"{group_id} group completed.")),
+        phase_seq=_phase_seq(iteration, "group", "complete", f"{group_id}:{attempt}"),
+    )
+    return record
+
 def _call_middle_tasking(
     manager: ManagerNode,
     requirement: str,
@@ -691,6 +1578,9 @@ def _call_leaf_expert(
 ) -> dict[str, Any]:
     context = provider.build_context_package(requirement, project_name, config.planning_mode, iteration, node.expert_id, extracted_intents=intents)
     prompt = _leaf_prompt(node, requirement, project_name, iteration, intents, feedback, context)
+    span_id = f"agent1.leaf.iter{iteration}.{node.expert_id}"
+    model_call_id = _sha256(f"{span_id}:{project_name}:{_sha256(requirement)}")[:16]
+    owner_group_id = _leaf_owner_group(node.expert_id)
     _emit_agent1_event(
         "agent_action",
         phase="planning",
@@ -700,6 +1590,17 @@ def _call_leaf_expert(
         rollup_stage="Leaf Experts",
         expert_id=node.expert_id,
         iteration=iteration,
+    )
+    _emit_agent1_event(
+        "agent1_leaf_expert_start",
+        phase="planning",
+        status="running",
+        span_id=span_id,
+        iteration=iteration,
+        expert_id=node.expert_id,
+        group_id=owner_group_id,
+        model_call_id=model_call_id,
+        summary=f"{node.expert_id} leaf expert call started.",
     )
     _emit_council_node(
         layer="leaf",
@@ -720,6 +1621,39 @@ def _call_leaf_expert(
             "domain": node.domain,
             "iteration": iteration,
         },
+        transient_retries=config.leaf_transient_max_retries,
+        retry_backoff_s=config.leaf_retry_backoff_s,
+        retry_event=lambda attempt, delay_s, error: _emit_agent1_event(
+            "agent1_leaf_expert_retry",
+            phase="planning",
+            status="running",
+            span_id=span_id,
+            iteration=iteration,
+            expert_id=node.expert_id,
+            group_id=owner_group_id,
+            model_call_id=model_call_id,
+            attempt=attempt,
+            retry_count=attempt,
+            backoff_s=delay_s,
+            error_class=type(error).__name__,
+            summary=f"{node.expert_id} transient Codex error; retry {attempt}/{config.leaf_transient_max_retries} after {delay_s:.3f}s.",
+        ),
+    )
+    leaf_failed = any(conflict.get("type") == "codex_call_failed" for conflict in record.get("conflicts", []))
+    _emit_agent1_event(
+        "agent1_leaf_expert_failed" if leaf_failed else "agent1_leaf_expert_done",
+        phase="planning",
+        status="fail" if leaf_failed else "pass",
+        span_id=span_id,
+        iteration=iteration,
+        expert_id=node.expert_id,
+        group_id=owner_group_id,
+        model_call_id=model_call_id,
+        retry_count=record.get("retry_count", 0),
+        latency_s=record.get("latency_s"),
+        error_class=_first_conflict_error_class(record),
+        summary=f"{node.expert_id} leaf expert {'failed' if leaf_failed else 'completed'} after {record.get('retry_count', 0)} transient retries.",
+        metrics=_token_metrics(record),
     )
     _emit_agent1_event(
         "agent_action",
@@ -846,48 +1780,72 @@ def _call_middle_manager(
     return record
 
 
-def _call_codex_record(codex_call: CodexCall, prompt: str, *, record_base: dict[str, Any]) -> dict[str, Any]:
+def _call_codex_record(
+    codex_call: CodexCall,
+    prompt: str,
+    *,
+    record_base: dict[str, Any],
+    transient_retries: int = 0,
+    retry_backoff_s: float = 0.0,
+    retry_event: Callable[[int, float, BaseException], None] | None = None,
+) -> dict[str, Any]:
     started = time.time()
     conflicts: list[dict[str, Any]] = []
     repair_attempted = False
     repair_pass = False
-    try:
-        result = codex_call(prompt)
-        content = getattr(result, "content", str(result))
-        output = _parse_output(content)
-        evidence = _safe_evidence(getattr(result, "evidence", {}), prompt, content)
-        parse_status = output.pop("parse_status", "json")
-        output, wrapper_key = _unwrap_schema_output(output, record_base)
-        if wrapper_key:
-            parse_status = f"{parse_status}_unwrapped:{wrapper_key}"
-        if not _schema_is_valid(output):
-            repair_attempted = True
-            repair_prompt = _json_repair_prompt(prompt, content, record_base, parse_status)
-            repair_result = codex_call(repair_prompt)
-            repair_content = getattr(repair_result, "content", str(repair_result))
-            repair_output = _parse_output(repair_content)
-            repair_parse_status = repair_output.pop("parse_status", "json")
-            repair_output, repair_wrapper_key = _unwrap_schema_output(repair_output, record_base)
-            if repair_wrapper_key:
-                repair_parse_status = f"{repair_parse_status}_unwrapped:{repair_wrapper_key}"
-            if _schema_is_valid(repair_output):
-                result = repair_result
-                content = repair_content
-                output = repair_output
-                evidence = _safe_evidence(getattr(result, "evidence", {}), prompt, content)
-                parse_status = "json_repaired"
-                repair_pass = True
-            else:
-                conflicts.append({"severity": "critical", "type": "invalid_output_schema", "details": f"Strict JSON/schema failed after one repair ({parse_status}->{repair_parse_status})."})
-                output = _fallback_output(record_base, repair_content)
-                parse_status = "repair_failed_invalid_schema"
-        output = _normalize_layer_output(record_base, output)
-    except Exception as exc:  # noqa: BLE001 - expert failures must become structured conflicts
-        content = ""
-        output = _fallback_output(record_base, str(exc))
-        evidence = {"error": str(exc), "prompt_sha256": _sha256(prompt), "response_sha256": _sha256("")}
-        parse_status = "exception"
-        conflicts.append({"severity": "critical", "type": "codex_call_failed", "message": str(exc)})
+    retry_errors: list[dict[str, Any]] = []
+    content = ""
+    output: dict[str, Any] = {}
+    evidence: dict[str, Any] = {}
+    parse_status = "exception"
+    for attempt in range(max(0, transient_retries) + 1):
+        try:
+            result = codex_call(prompt)
+            content = getattr(result, "content", str(result))
+            output = _parse_output(content)
+            evidence = _safe_evidence(getattr(result, "evidence", {}), prompt, content)
+            parse_status = output.pop("parse_status", "json")
+            output, wrapper_key = _unwrap_schema_output(output, record_base)
+            if wrapper_key:
+                parse_status = f"{parse_status}_unwrapped:{wrapper_key}"
+            if not _schema_is_valid(output):
+                repair_attempted = True
+                repair_prompt = _json_repair_prompt(prompt, content, record_base, parse_status)
+                repair_result = codex_call(repair_prompt)
+                repair_content = getattr(repair_result, "content", str(repair_result))
+                repair_output = _parse_output(repair_content)
+                repair_parse_status = repair_output.pop("parse_status", "json")
+                repair_output, repair_wrapper_key = _unwrap_schema_output(repair_output, record_base)
+                if repair_wrapper_key:
+                    repair_parse_status = f"{repair_parse_status}_unwrapped:{repair_wrapper_key}"
+                if _schema_is_valid(repair_output):
+                    result = repair_result
+                    content = repair_content
+                    output = repair_output
+                    evidence = _safe_evidence(getattr(result, "evidence", {}), prompt, content)
+                    parse_status = "json_repaired"
+                    repair_pass = True
+                else:
+                    conflicts.append({"severity": "critical", "type": "invalid_output_schema", "details": f"Strict JSON/schema failed after one repair ({parse_status}->{repair_parse_status})."})
+                    output = _fallback_output(record_base, repair_content)
+                    parse_status = "repair_failed_invalid_schema"
+            output = _normalize_layer_output(record_base, output)
+            break
+        except Exception as exc:  # noqa: BLE001 - expert failures must become structured conflicts
+            if attempt < transient_retries and _is_transient_codex_error(exc):
+                delay_s = max(0.0, retry_backoff_s) * (2 ** attempt)
+                retry_errors.append({"attempt": attempt + 1, "error_class": type(exc).__name__, "message": str(exc)[:300], "backoff_s": delay_s})
+                if retry_event:
+                    retry_event(attempt + 1, delay_s, exc)
+                if delay_s > 0:
+                    time.sleep(delay_s)
+                continue
+            content = ""
+            output = _fallback_output(record_base, str(exc))
+            evidence = {"error": str(exc), "prompt_sha256": _sha256(prompt), "response_sha256": _sha256("")}
+            parse_status = "exception"
+            conflicts.append({"severity": "critical", "type": "codex_call_failed", "message": str(exc), "error_class": type(exc).__name__, "retry_count": len(retry_errors), "transient": _is_transient_codex_error(exc)})
+            break
     record = {
         **record_base,
         "output": output,
@@ -904,9 +1862,29 @@ def _call_codex_record(codex_call: CodexCall, prompt: str, *, record_base: dict[
         "parse_status": parse_status,
         "repair_attempted": repair_attempted,
         "repair_pass": repair_pass,
+        "retry_attempted": bool(retry_errors),
+        "retry_count": len(retry_errors),
+        "retry_errors": retry_errors,
         "conflicts": conflicts + _output_conflicts(output),
     }
     return record
+
+
+def _is_transient_codex_error(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(token in text for token in ("timeout", "timed out", "502", "bad gateway", "temporarily unavailable", "connection reset"))
+
+def _leaf_owner_group(expert_id: str) -> str:
+    for manager in MIDDLE_MANAGERS:
+        if expert_id in manager.leaf_expert_ids:
+            return manager.manager_id
+    return ""
+
+def _first_conflict_error_class(record: dict[str, Any]) -> str:
+    for conflict in record.get("conflicts", []):
+        if isinstance(conflict, dict) and conflict.get("error_class"):
+            return str(conflict.get("error_class"))
+    return ""
 
 
 def _parse_output(content: str) -> dict[str, Any]:
@@ -932,6 +1910,7 @@ def _unwrap_schema_output(output: dict[str, Any], record_base: dict[str, Any]) -
     preferred = {
         "principal_charter": ("principal_charter", "charter", "top_down_charter"),
         "middle_tasking": ("middle_tasking", "tasking", "manager_tasking"),
+        "group_session": ("group_session", "cluster_group_session", "manager_group_session", "middle_review", "manager_review"),
         "leaf": ("leaf_analysis", "expert_analysis", "leaf"),
         "middle": ("middle_review", "manager_review", "middle"),
         "principal": ("principal_decision", "principal_architecture", "principal"),
@@ -963,7 +1942,24 @@ def _normalize_layer_output(record_base: dict[str, Any], output: dict[str, Any])
     for key in ("conflicts", "domain_conflicts", "unresolved_conflicts"):
         if key in normalized:
             normalized[key] = _coerce_conflict_list(normalized.get(key))
-    if record_base.get("record_type") == "middle":
+    if record_base.get("record_type") == "group_session":
+        decisions = _coerce_list(normalized.get("decisions", []))
+        normalized.setdefault("group_id", record_base.get("group_id"))
+        normalized.setdefault("manager_id", record_base.get("manager_id"))
+        normalized.setdefault("leaf_expert_ids", record_base.get("leaf_expert_ids", []))
+        normalized.setdefault("guest_expert_ids", record_base.get("guest_expert_ids", []))
+        normalized.setdefault("leaf_outputs", _default_leaf_outputs(record_base, normalized))
+        normalized.setdefault("internal_challenges", _coerce_conflict_list(normalized.get("conflicts", [])))
+        normalized.setdefault("accepted_decisions", decisions)
+        normalized.setdefault("rejected_decisions", [])
+        normalized.setdefault("manager_summary", normalized.get("summary", ""))
+        normalized.setdefault("handoff_to_principal", normalized.get("summary", ""))
+        normalized.setdefault("needs_retry", bool(normalized.get("needs_revision")))
+        normalized.setdefault("covered_experts", record_base.get("covered_experts", []))
+        normalized.setdefault("domain_summary", normalized.get("manager_summary", normalized.get("summary", "")))
+        normalized.setdefault("domain_conflicts", _coerce_conflict_list(normalized.get("conflicts", [])))
+        normalized.setdefault("feedback_to_leaf_experts", {})
+    elif record_base.get("record_type") == "middle":
         decisions = _coerce_list(normalized.get("decisions", []))
         normalized.setdefault("accepted_decisions", decisions)
         normalized.setdefault("rejected_decisions", [])
@@ -1352,6 +2348,35 @@ def _middle_tasking_prompt(manager: ManagerNode, requirement: str, project_name:
         ]
     )
 
+def _group_session_prompt(
+    group: dict[str, Any],
+    requirement: str,
+    project_name: str,
+    iteration: int,
+    charter_record: dict[str, Any],
+    context: dict[str, Any],
+    feedback: dict[str, Any],
+    intake_report: dict[str, Any] | None,
+) -> str:
+    return "\n".join(
+        [
+            f"# Agent 1 V7.1 Group Session {group.get('group_id')}: {group.get('title')}",
+            "Simulate one manager and its leaf experts debating in one Codex call.",
+            "Manager must challenge weak leaf claims, reject unsafe assumptions, and distill one handoff for Principal.",
+            _schema_instruction("group_session"),
+            "Also include: group_id, manager_id, leaf_expert_ids, guest_expert_ids, leaf_outputs, internal_challenges, accepted_decisions, rejected_decisions, manager_summary, handoff_to_principal, needs_retry.",
+            "Every internal_challenge/conflict should include severity, source_expert_id, target_group_id when cross-domain, reason, proposed_resolution, and resolution_status.",
+            f"Project: {project_name}",
+            f"Iteration: {iteration}",
+            f"Requirement: {requirement}",
+            f"Group assignment: {json.dumps(_digest_value(group), sort_keys=True)}",
+            f"Principal charter: {json.dumps(_digest_value(charter_record.get('output', {})), sort_keys=True)}",
+            f"Intake router: {json.dumps(_compact_intake_report(intake_report), sort_keys=True)}",
+            f"Feedback: {json.dumps(_digest_value(feedback), sort_keys=True)[:4000]}",
+            f"Context package: {json.dumps(_compact_context(context), sort_keys=True)}",
+        ]
+    )
+
 def _leaf_prompt(node: ExpertNode, requirement: str, project_name: str, iteration: int, intents: dict[str, Any], feedback: dict[str, Any], context: dict[str, Any]) -> str:
     return "\n".join(
         [
@@ -1430,6 +2455,230 @@ def _json_repair_prompt(original_prompt: str, bad_content: str, record_base: dic
             "```",
         ]
     )
+
+def _routing_text(requirement: str, intake_report: dict[str, Any] | None) -> str:
+    parts = [requirement]
+    if isinstance(intake_report, dict):
+        parts.append(json.dumps(_digest_value(intake_report.get("canonical_intent", {})), sort_keys=True))
+        parts.append(" ".join(str(item) for item in intake_report.get("missing_fields", [])[:20]))
+    return " ".join(parts).lower().replace("_", " ")
+
+def _leaf_keyword_hits(leaf: dict[str, Any], text: str) -> list[str]:
+    tags = [str(item).lower().replace("_", " ") for item in leaf.get("tags") or []]
+    title_words = [word.lower() for word in str(leaf.get("title") or "").replace("/", " ").split() if len(word) > 2]
+    domain = str(leaf.get("domain") or "").lower()
+    keywords = [*tags, *title_words, domain]
+    return sorted({keyword for keyword in keywords if keyword and keyword in text})
+
+def _guest_candidates_for_group(group_id: str) -> tuple[str, ...]:
+    candidates = {
+        "M01": ("L09", "L14", "L23", "L24"),
+        "M02": ("L09", "L14", "L17", "L18"),
+        "M03": ("L14", "L16", "L17", "L18"),
+        "M04": ("L09", "L16", "L17", "L18", "L21"),
+        "M05": ("L09", "L13", "L14", "L18", "L21", "L23"),
+        "M06": ("L09", "L14", "L17", "L21", "L23"),
+        "M07": ("L09", "L14", "L16", "L17", "L18", "L21"),
+    }
+    return candidates.get(group_id, ())
+
+def _cluster_rationale(group_id: str, matched_keywords: list[str], guest_ids: list[str], score: int) -> str:
+    if matched_keywords or guest_ids:
+        return f"{group_id} score={score}; matched={matched_keywords}; guests={guest_ids}"
+    return f"{group_id} uses stable default membership; no extra semantic guest needed."
+
+def _default_leaf_outputs(record_base: dict[str, Any], output: dict[str, Any]) -> list[dict[str, Any]]:
+    decisions = _coerce_list(output.get("decisions", []))
+    return [
+        {
+            "expert_id": leaf_id,
+            "summary": output.get("summary", ""),
+            "decisions": decisions[:3],
+            "status": "distilled_by_group_session",
+        }
+        for leaf_id in record_base.get("covered_experts", [])
+    ]
+
+def _group_session_failed(record: dict[str, Any]) -> bool:
+    if any(conflict.get("type") == "codex_call_failed" for conflict in record.get("conflicts", [])):
+        return True
+    if record.get("parse_status") in {"exception", "repair_failed_invalid_schema"}:
+        return True
+    return False
+
+def _group_retry_targets(records: list[dict[str, Any]]) -> list[str]:
+    targets = []
+    for record in records:
+        if _is_group_infra_failure(record):
+            continue
+        confidence = _float_or_none(record.get("output", {}).get("confidence"))
+        critical = any(conflict.get("severity") == "critical" for conflict in record.get("conflicts", []))
+        if record.get("output", {}).get("needs_retry") or critical or (confidence is not None and confidence < 0.35):
+            targets.append(str(record.get("group_id") or record.get("manager_id") or ""))
+    return sorted({target for target in targets if target})
+
+def _is_group_infra_failure(record: dict[str, Any]) -> bool:
+    return any(conflict.get("type") == "codex_call_failed" for conflict in record.get("conflicts", []))
+
+def _group_infra_failure_ids(records: list[dict[str, Any]]) -> list[str]:
+    return sorted(
+        {
+            str(record.get("group_id") or record.get("manager_id") or "")
+            for record in records
+            if _is_group_infra_failure(record)
+        }
+        - {""}
+    )
+
+def _emit_group_retry_suppressed(group_ids: list[str], iteration: int, *, parent_span_id: str, reason: str) -> None:
+    _emit_agent1_event(
+        "agent1_group_retry",
+        phase="planning",
+        status="skipped",
+        span_id=f"agent1.cluster.iter{iteration}.retry_suppressed.{_sha256(','.join(group_ids) + reason)[:10]}",
+        parent_span_id=parent_span_id,
+        iteration=iteration,
+        target_group_ids=group_ids,
+        reason=reason,
+        summary=f"Group retry suppressed for {len(group_ids)} groups because failures are infrastructure/API timeouts; avoiding retry storm.",
+        metric={"suppressed_group_count": len(group_ids)},
+    )
+
+def _retry_group_sessions(
+    target_group_ids: list[str],
+    current_records: list[dict[str, Any]],
+    requirement: str,
+    project_name: str,
+    codex_call: CodexCall,
+    charter_record: dict[str, Any],
+    assignment: dict[str, Any],
+    config: Agent1CouncilConfig,
+    iteration: int,
+    provider: Agent1ContextProvider,
+    *,
+    feedback: dict[str, Any],
+    intake_report: dict[str, Any] | None,
+    parent_span_id: str,
+) -> list[dict[str, Any]]:
+    groups_by_id = {str(group.get("group_id") or group.get("manager_id") or ""): group for group in assignment.get("groups", [])}
+    records_by_id = {str(record.get("group_id") or record.get("manager_id") or ""): record for record in current_records}
+    retry_records: list[dict[str, Any]] = []
+    for group_id in target_group_ids:
+        group = groups_by_id.get(group_id)
+        if not group:
+            continue
+        _emit_agent1_event(
+            "agent1_group_retry",
+            phase="planning",
+            status="running",
+            span_id=f"agent1.cluster.iter{iteration}.{group_id}.retry",
+            parent_span_id=parent_span_id,
+            iteration=iteration,
+            target_group_id=group_id,
+            group_id=group_id,
+            manager_id=group_id,
+            attempt=2,
+            summary=f"Retrying {group_id} only; Principal/group quality gate requested targeted fix.",
+        )
+        retry_records.append(
+            _call_group_session(
+                group,
+                requirement,
+                project_name,
+                codex_call,
+                config,
+                iteration,
+                charter_record,
+                provider,
+                {**feedback, "previous_group_record": _digest_value(records_by_id.get(group_id, {}))},
+                intake_report,
+                parent_span_id,
+                2,
+            )
+        )
+    return retry_records
+
+def _replace_group_records(records: list[dict[str, Any]], retry_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    replacements = {str(item.get("group_id") or item.get("manager_id") or ""): item for item in retry_records}
+    return [replacements.get(str(record.get("group_id") or record.get("manager_id") or ""), record) for record in records]
+
+def _principal_retry_targets(principal_record: dict[str, Any], assignment: dict[str, Any]) -> list[str]:
+    if principal_record.get("output", {}).get("plan_ready_candidate") is not False and not any(conflict.get("severity") == "critical" for conflict in principal_record.get("conflicts", [])):
+        return []
+    known = {str(group.get("group_id") or group.get("manager_id") or "") for group in assignment.get("groups", [])}
+    text = json.dumps(_digest_value(principal_record.get("output", {})), sort_keys=True).lower()
+    targets = [group_id for group_id in known if group_id.lower() in text]
+    feedback = principal_record.get("output", {}).get("feedback_to_middle_managers", {})
+    if isinstance(feedback, dict):
+        targets.extend(group_id for group_id in known if group_id in feedback)
+    for conflict in _coerce_conflict_list(principal_record.get("output", {}).get("unresolved_conflicts", [])):
+        target = str(conflict.get("target_group_id") or conflict.get("group_id") or "")
+        if target in known:
+            targets.append(target)
+    return sorted(set(targets))[:2]
+
+def _cross_group_challenge_matrix(iteration: int, group_records: list[dict[str, Any]]) -> dict[str, Any]:
+    challenges: list[dict[str, Any]] = []
+    known_groups = {str(record.get("group_id") or record.get("manager_id") or "") for record in group_records}
+    for record in group_records:
+        group_id = str(record.get("group_id") or record.get("manager_id") or "")
+        output = record.get("output", {}) if isinstance(record.get("output"), dict) else {}
+        for index, item in enumerate([*_coerce_conflict_list(output.get("internal_challenges", [])), *_coerce_conflict_list(output.get("conflicts", []))]):
+            target = str(item.get("target_group_id") or item.get("owner_group_id") or item.get("group_id") or "")
+            if target and target != group_id and target in known_groups:
+                resolution = str(item.get("resolution_status") or item.get("status") or item.get("resolution") or "")
+                resolved = any(token in resolution.lower() for token in ("resolved", "accepted", "rejected", "closed", "mitigated", "pass"))
+                challenges.append(
+                    {
+                        "challenge_id": f"I{iteration}-{group_id}-{target}-{index}",
+                        "source_group_id": group_id,
+                        "target_group_id": target,
+                        "severity": item.get("severity", "noncritical"),
+                        "reason": item.get("reason") or item.get("message") or item.get("conflict") or item.get("description") or "",
+                        "proposed_resolution": item.get("proposed_resolution") or item.get("resolution") or "",
+                        "resolution": resolution,
+                        "resolved": resolved or item.get("severity") != "critical",
+                    }
+                )
+    return {
+        "schema_version": "agent1.cross_group_challenge_matrix.v1",
+        "iteration": iteration,
+        "challenge_count": len(challenges),
+        "unresolved_count": sum(1 for item in challenges if not item.get("resolved")),
+        "challenges": challenges,
+    }
+
+def _emit_cross_group_challenges(challenge_matrix: dict[str, Any], iteration: int, *, parent_span_id: str) -> None:
+    for challenge in challenge_matrix.get("challenges", []):
+        _emit_agent1_event(
+            "agent1_cross_group_challenge",
+            phase="planning",
+            status="pass" if challenge.get("resolved") else "fail",
+            span_id=f"agent1.cluster.iter{iteration}.{challenge.get('challenge_id')}",
+            parent_span_id=parent_span_id,
+            iteration=iteration,
+            group_id=challenge.get("source_group_id"),
+            owner_group_id=challenge.get("target_group_id"),
+            challenge_id=challenge.get("challenge_id"),
+            resolution=challenge.get("resolution") or challenge.get("proposed_resolution"),
+            summary=str(challenge.get("reason") or "cross-group challenge")[:600],
+        )
+
+def _token_metrics(record: dict[str, Any]) -> dict[str, Any]:
+    usage = record.get("token_usage", {}) if isinstance(record.get("token_usage"), dict) else {}
+    return {
+        "latency_s": record.get("latency_s"),
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "total_tokens": usage.get("total_tokens"),
+        "estimated_cost_usd": usage.get("estimated_cost_usd"),
+    }
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
     return {

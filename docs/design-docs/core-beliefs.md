@@ -15,6 +15,6 @@ source_of_truth: true
 - Docs must route agents to code/tests, not replace code/tests.
 - Stable invariants belong in `docs/design-docs/`.
 - Product behavior belongs in `docs/product-specs/`.
-- Active implementation work belongs in `docs/exec-plans/active/`.
+- Active implementation work belongs in local-only private plans under `_private/plans/`.
 - References are non-binding unless promoted into design docs.
 - Additive migration beats destructive reorganization.

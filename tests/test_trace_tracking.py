@@ -8,7 +8,9 @@ from semiconductor_swarm.tracing import (
     finalize_trace_reports,
     read_trace_events,
     redact,
+    secret_leaks,
     set_trace_context,
+    trace_debug_issue,
     trace_event,
     write_trace_health_report,
 )
@@ -39,6 +41,16 @@ def test_trace_redaction_removes_secrets_from_nested_payload(tmp_path):
     assert event["message"] == "safe"
 
 
+def test_trace_redaction_and_leak_scan_catch_inline_secret_assignment():
+    payload = {"message": "debug issue carried api_key=TESTSECRET12345 in free text"}
+
+    clean = redact(payload)
+
+    assert "TESTSECRET12345" not in json.dumps(clean)
+    assert clean["message"] == "debug issue carried api_key=<redacted> in free text"
+    assert secret_leaks(payload) == ["secret_assignment"]
+
+
 def test_trace_jsonl_schema_and_reader(tmp_path):
     set_trace_context(run_id="run-2", thread_id="thread-2", flow_id="flow-a", output_dir=tmp_path)
 
@@ -63,6 +75,25 @@ def test_trace_jsonl_schema_and_reader(tmp_path):
     assert event["node_id"] == "AGENT1.FAST_ROUTER"
     assert event["trace_id"]
 
+
+def test_trace_debug_issue_promotes_group_session_context(tmp_path):
+    set_trace_context(run_id="run-group", thread_id="thread-group", output_dir=tmp_path)
+
+    trace_debug_issue(
+        severity="error",
+        source="agent1",
+        code="agent1_group_session_infra_failure",
+        message="M02 failed",
+        details={"iteration": 2, "group_id": "M02", "span_id": "span-m02", "model_call_id": "call-m02"},
+        node_id="AGENT1.GROUP_SESSION.M02",
+    )
+
+    clear_trace_context()
+    issue = json.loads((tmp_path / "reports" / "traces" / TRACE_FILES["debug_issues"]).read_text(encoding="utf-8"))
+    assert issue["group_id"] == "M02"
+    assert issue["span_id"] == "span-m02"
+    assert issue["model_call_id"] == "call-m02"
+    assert issue["iteration"] == 2
 
 def test_trace_jsonl_concurrent_appends_do_not_corrupt_lines(tmp_path):
     set_trace_context(run_id="run-concurrent", thread_id="thread-concurrent", flow_id="flow-concurrent", output_dir=tmp_path)

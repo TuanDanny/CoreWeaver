@@ -21,4 +21,4 @@ Maintain docs tree, maps, indexes, and health checks.
 ## Edit Rules
 - Update indexes with new docs.
 - Run docs health check.
-- Save plans and done logs under `docs/exec-plans/`.
+- Save plans and done logs under `_private/plans/` when they expose roadmap or internal strategy.

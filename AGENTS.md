@@ -14,7 +14,7 @@ Semiconductor Swarm converts chip requirements into architecture, RTL, formal, D
 
 ## Read Map
 - System architecture: `ARCHITECTURE.md`
-- Work plans: `PLANS.md`
+- Private work plans: `_private/plans/` (local-only, not committed)
 - Stable design contracts: `docs/design-docs/index.md`
 - Product specs: `docs/product-specs/index.md`
 - Prompt sources: `docs/prompts/index.md`
@@ -38,6 +38,6 @@ python -m pytest -q
 ```
 
 ## Conflict Policy
-Prefer tests/code behavior, then stable design docs, then product specs, then prompt sources, then generated/manual indexes, then active exec plans, then references, then chat history.
+Prefer tests/code behavior, then stable design docs, then product specs, then prompt sources, then generated/manual indexes, then private local plans, then references, then chat history.
 
 If generated docs become machine-generated, trust them above manual docs except tests/code.

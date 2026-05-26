@@ -12,7 +12,6 @@ source_of_truth: true
 | Prompt | Canonical Path | Status | Notes |
 |---|---|---|---|
 | Semiconductor Swarm master | `docs/semiconductor_swarm_ai.md` | canonical | User-required standard prompt. |
-| Agent1 SystemRDL/FW upgrade | `docs/prompts/v3.5_agent1_systemrdl_fw_upgrade.md` | canonical | Covered by compliance matrix. |
 | Agent1 runtime prompt | `semiconductor_swarm/agents/agent1_planning/agent1_prompt.py` | runtime canonical | Python prompt source. |
 | Agent2 runtime prompt | `semiconductor_swarm/agents/agent2_rtl/agent2_prompt.py` | runtime canonical | Python prompt source. |
 | Agent3 runtime prompt | `semiconductor_swarm/agents/agent3_dv/agent3_prompt.py` | runtime canonical | Python prompt source. |

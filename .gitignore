@@ -54,3 +54,22 @@ browser_profile/
 
 # Local working notes.
 history.md
+
+# Private planning and idea material. Keep these local; do not publish.
+_private/
+PLANS.md
+docs/exec-plans/
+docs/*PLAN*.md
+docs/*Plan*.md
+docs/*plan*.md
+docs/*UPGRADE*.md
+docs/*Upgrade*.md
+docs/*upgrade*.md
+docs/*TASKS*.md
+docs/*Tasks*.md
+docs/*tasks*.md
+docs/prompts/*upgrade*.md
+docs/prompts/*Upgrade*.md
+docs/design-docs/agent1-v72-industrial-signoff-contract.md
+docs/generated/Kiem_tra_toan_bo_Agent_AI_*.md
+docs/governance/Kiem_tra_toan_bo_Agent_AI_*.md

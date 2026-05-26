@@ -6,6 +6,8 @@ from typing import Any
 
 import httpx
 
+PROBE_TIMEOUT_S = 15.0
+
 
 @dataclass(frozen=True)
 class ProviderSpec:
@@ -39,14 +41,14 @@ async def probe_openai_compatible_endpoint(endpoint: str, model: str, api_key: s
         "temperature": 0,
     }
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=PROBE_TIMEOUT_S) as client:
             response = await client.post(
                 f"{base}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json=payload,
             )
     except httpx.TimeoutException:
-        return {"ok": False, "message": "Network timeout: endpoint did not respond within 5s."}
+        return {"ok": False, "message": f"Network timeout: endpoint did not respond within {int(PROBE_TIMEOUT_S)}s."}
     except httpx.ConnectError:
         return {"ok": False, "message": "Network error: cannot connect to endpoint. Check whether 9Router is running."}
     except httpx.RequestError as exc:

@@ -1,8 +1,8 @@
-"""Plan-compatible Agent 2 RAG retriever stub.
+"""Deterministic Agent 2 RAG retriever stub.
 
-This module is the stable public hook requested by
-docs/exec-plans/active/AGENT_2_Upgrade_V1.md.  It intentionally performs no
-network fetches; local pattern retrieval remains deterministic.
+This module is the stable public hook for local RTL pattern retrieval. It
+intentionally performs no network fetches; local pattern retrieval remains
+deterministic.
 """
 from __future__ import annotations
 

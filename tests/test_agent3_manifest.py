@@ -154,7 +154,7 @@ def test_dev_mode_missing_tools_is_partial_with_warning():
 
 
 def test_run_cocotb_sim_persists_real_reports(tmp_path):
-    spec = generate_architecture_spec("SPI controller 50MHz", "spi_ctrl")
+    spec = generate_architecture_spec("Timer APB controller 50MHz", "timer_ctrl")
     rtl = generate_rtl_files(spec)
     dv = generate_dv_files(spec, rtl)
     by_name = _by_name(dv)

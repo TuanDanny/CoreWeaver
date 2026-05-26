@@ -6,7 +6,7 @@ type: governance
 last_reviewed: 2026-05-20
 source_of_truth: true
 related_plan:
-  - docs/exec-plans/completed/openai-harness-full-compliance-plan.md
+  - local-only private plan archive
 related_reference:
   - docs/references/openai-harness-engineering-full-notes.md
 runtime_agent_changes: package-facade-only
@@ -38,20 +38,20 @@ Prompt/runtime tests remain required for prompt or agent code changes. This pass
 
 | ID | Principle | Status | Evidence | Guardrail |
 |---|---|---|---|---|
-| HE-001 | Repository knowledge is durable system of record | pass | `docs/design-docs/repo-knowledge-store.md`, `docs/governance/source-of-truth-policy.md`, `PLANS.md` | Code/tests still define executable behavior. |
+| HE-001 | Repository knowledge is durable system of record | pass | `docs/design-docs/repo-knowledge-store.md`, `docs/governance/source-of-truth-policy.md`, local-only private plans | Code/tests still define executable behavior. |
 | HE-002 | Agents get concise maps, not huge manuals | pass | `AGENTS.md`, `ARCHITECTURE.md`, `docs/knowledge-map.yaml` | `AGENTS.md` remains a map only. |
 | HE-003 | Deep knowledge lives in structured docs | pass | `docs/design-docs/`, `docs/product-specs/`, `docs/governance/`, `docs/prompts/`, `docs/agent-task-cards/` | Frontmatter required by docs health. |
-| HE-004 | Task routes are explicit | pass | `AGENTS.md`, `docs/knowledge-map.yaml`, `PLANS.md` | Health check validates active plan routing. |
-| HE-005 | Plans are versioned and status is unambiguous | pass | `docs/exec-plans/active/`, `completed/`, `superseded/` | Health check compares folder contents to indexes. |
-| HE-006 | Superseded knowledge is preserved but not active | pass | `docs/exec-plans/superseded/index.md` | Superseded plans have `source_of_truth: false`. |
+| HE-004 | Task routes are explicit | pass | `AGENTS.md`, `docs/knowledge-map.yaml`, local-only private plans | Health check validates public/private boundary. |
+| HE-005 | Plans are versioned and status is unambiguous | pass | local-only private plan archive | Private plans are kept out of publishable docs. |
+| HE-006 | Superseded knowledge is preserved but not active | pass | local-only private plan archive | Superseded plans are not published. |
 | HE-007 | Generated/manual indexes do not drift silently | pass | `docs/generated/*`, `scripts/check_docs_health.py` | Health check validates selected backtick paths. |
 | HE-008 | Docs are machine-checkable | pass | `scripts/check_docs_health.py`, `tests/test_docs_health.py` | Docs health checks required files, frontmatter, links, knowledge-map paths, plan indexes, generated paths. |
 | HE-009 | Prompt/context sources are explicit | pass | `docs/prompts/index.md`, `docs/prompts/canonical-prompts.md`, `docs/prompt_compliance_matrix.yaml` | Prompt contract tests remain the runtime-prompt guard. |
 | HE-010 | Source-of-truth hierarchy is clear | pass | `AGENTS.md`, `docs/governance/source-of-truth-policy.md` | Conflicts resolve to tests/code first. |
-| HE-011 | Legacy knowledge is retained until migrated | pass | `docs/legacy/index.md`, `docs/exec-plans/superseded/index.md` | Historical docs are labelled non-primary. |
+| HE-011 | Legacy knowledge is retained until migrated | pass | `docs/legacy/index.md`, local-only private plan archive | Historical docs are labelled non-primary. |
 | HE-012 | Runtime quality is protected during harness work | pass | `semiconductor_swarm/__init__.py`, prompt/docs tests | Package root is lightweight; graph runtime stays in `semiconductor_swarm/swarm_graph.py`. |
 | HE-013 | Compliance result is recorded | pass | `docs/governance/harness-engineering-compliance-audit.md`, this matrix | Re-run docs health after routing changes. |
-| HE-014 | Recurring cleanup is cheap | pass | `scripts/check_docs_health.py`, `docs/exec-plans/tech-debt-tracker.md` | Checker can run locally/CI; automation may call same script. |
+| HE-014 | Recurring cleanup is cheap | pass | `scripts/check_docs_health.py`, `docs/GITHUB_PUBLISHING.md` | Checker can run locally/CI; automation may call same script. |
 
 ## Summary Counts
 

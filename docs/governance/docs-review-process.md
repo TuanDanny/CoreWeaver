@@ -11,7 +11,7 @@ source_of_truth: true
 
 ## Before Work
 - Read `AGENTS.md`.
-- Read `PLANS.md`.
+- Read public docs plus local-only `_private/plans/` when available.
 - Read relevant product spec.
 - Read active exec plan if work is multi-step.
 

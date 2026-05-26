@@ -15,10 +15,14 @@ from semiconductor_swarm.agents.agent1_planning.capability_registry import asses
 from semiconductor_swarm.tools.bandwidth_calculator import calculate_bandwidth
 from semiconductor_swarm.tools.ppa_calculator import calculate_ppa
 
-SUPPORTED_EXTERNAL_PERIPHERALS = ("uart", "spi", "i2c", "gpio")
+SUPPORTED_EXTERNAL_PERIPHERALS = ("uart", "spi", "i2c", "gpio", "timer")
 UART_REQUIRED_REGISTERS = ("txdata", "rxdata", "status", "ctrl", "baud_div", "irq_status", "irq_enable")
 SPI_REQUIRED_REGISTERS = ("ctrl", "status", "txdata", "rxdata", "clk_div", "cs", "irq_status", "irq_enable", "irq_clear")
 I2C_REQUIRED_REGISTERS = ("txdata", "rxdata", "status", "ctrl", "target_addr", "timing", "irq_status", "irq_enable")
+I2C_TEMPERATURE_SENSOR_REGISTERS = ("temperature_data", "high_threshold", "low_threshold")
+GPIO_REQUIRED_REGISTERS = ("data_in", "data_out", "direction", "irq_type", "irq_status", "irq_enable")
+TIMER_REQUIRED_REGISTERS = ("ctrl", "load", "value", "prescale", "watchdog", "irq_status", "irq_enable")
+LOCK_REGISTER_NAME = "lock"
 
 
 @dataclass(frozen=True)
@@ -36,6 +40,7 @@ class ParsedRequirement:
     cpu_width_bits: int
     requested_bus_protocol: str | None
     external_peripherals: list[str]
+    lock_register_required: bool
     architecture_assumptions: list[str]
 
 
@@ -47,6 +52,7 @@ def parse_requirement(requirement: str) -> ParsedRequirement:
     cpu_width_bits = _extract_cpu_width_bits(text) or 32
     requested_bus_protocol = _extract_bus_protocol(text)
     external_peripherals = _extract_external_peripherals(text)
+    lock_register_required = _requires_lock_register(text)
     target_node = "12nm" if "12nm" in text else "28nm"
     freq_mhz = _extract_int_before(text, "mhz") or (100 if "camera" in text or ai_workload else 50)
     power_budget_mw = _extract_power_budget_mw(text)
@@ -85,6 +91,7 @@ def parse_requirement(requirement: str) -> ParsedRequirement:
         cpu_width_bits=cpu_width_bits,
         requested_bus_protocol=requested_bus_protocol,
         external_peripherals=external_peripherals,
+        lock_register_required=lock_register_required,
         architecture_assumptions=[],
     )
     return ParsedRequirement(
@@ -152,18 +159,23 @@ def generate_architecture_spec(requirement: str, project_name: str = "agent1_soc
     text = requirement.lower()
     wants_aes = "aes" in text or "secret key" in text or "khoa bi mat" in text
     accelerator = "aes128_crypto_core" if wants_aes else ("int8_mac_array" if parsed.mac_units else "none")
+    needs_interrupt_ctrl = _requires_interrupt_controller(parsed, wants_aes)
     if cpu_present:
-        ip_blocks = ["apb_interconnect", "control_regs", "timer", "interrupt_ctrl"]
+        ip_blocks = ["apb_interconnect", "control_regs", "timer"]
+        if needs_interrupt_ctrl:
+            ip_blocks.append("interrupt_ctrl")
         if wants_aes:
             ip_blocks.append("aes128_core")
         if parsed.mac_units:
             ip_blocks.extend(["dma_engine", "sram_controller", "mac_array"])
     elif parsed.external_peripherals:
-        ip_blocks = ["control_regs", "timer", "interrupt_ctrl"]
+        ip_blocks = []
+        if needs_interrupt_ctrl:
+            ip_blocks.append("interrupt_ctrl")
     else:
         ip_blocks = []
         if wants_aes:
-            ip_blocks.append("aes128_core")
+            ip_blocks.extend(["interrupt_ctrl", "aes128_core"])
         if parsed.mac_units:
             ip_blocks.append("mac_array")
     for peripheral in parsed.external_peripherals:
@@ -172,6 +184,10 @@ def generate_architecture_spec(requirement: str, project_name: str = "agent1_soc
     if not ip_blocks:
         ip_blocks.append("control_regs")
 
+    requested_block_set = sorted(set(parsed.external_peripherals + (["aes128_core"] if wants_aes else []) + (["mac_array"] if parsed.mac_units else [])))
+    allowed_derived_block_set = sorted(block for block in ip_blocks if block not in requested_block_set)
+    derived_block_justification = _derived_block_justification(ip_blocks, parsed, wants_aes, needs_interrupt_ctrl)
+
     memory_map = _memory_map(ip_blocks)
     for peripheral in parsed.external_peripherals:
         if peripheral == "uart":
@@ -179,7 +195,11 @@ def generate_architecture_spec(requirement: str, project_name: str = "agent1_soc
         if peripheral == "spi":
             memory_map["spi"]["registers"] = _spi_registers()
         if peripheral == "i2c":
-            memory_map["i2c"]["registers"] = _i2c_registers()
+            memory_map["i2c"]["registers"] = _i2c_registers(parsed.raw)
+        if peripheral == "gpio":
+            memory_map["gpio"]["registers"] = _gpio_registers(_lock_applies_to_block(parsed.raw, "gpio"))
+        if peripheral == "timer":
+            memory_map["timer"]["registers"] = _timer_registers(_lock_applies_to_block(parsed.raw, "timer"))
 
     cpu_subsystem = {
         "name": "cpu_core" if cpu_present else "external_apb_host",
@@ -209,8 +229,12 @@ def generate_architecture_spec(requirement: str, project_name: str = "agent1_soc
                 "frequency_mhz": parsed.freq_mhz,
                 "target_node": parsed.target_node,
                 "power_budget_mw": parsed.power_budget_mw,
+                "lock_register_required": parsed.lock_register_required,
                 "unknowns": _intent_unknowns(parsed),
             },
+            "requested_block_set": requested_block_set,
+            "allowed_derived_block_set": allowed_derived_block_set,
+            "derived_block_justification": derived_block_justification,
         },
         "target_node": parsed.target_node,
         "isa": cpu_subsystem["isa"],
@@ -243,6 +267,8 @@ def generate_architecture_spec(requirement: str, project_name: str = "agent1_soc
             "address_width_bits": 32,
             "masters": [master_name],
             "slaves": ip_blocks,
+            "requested_block_set": requested_block_set,
+            "allowed_derived_block_set": allowed_derived_block_set,
         },
         "bus_architecture": {
             "primary_protocol": primary_protocol,
@@ -251,6 +277,9 @@ def generate_architecture_spec(requirement: str, project_name: str = "agent1_soc
             "address_width_bits": 32,
             "masters": [master_name],
             "slaves": ip_blocks,
+            "requested_block_set": requested_block_set,
+            "allowed_derived_block_set": allowed_derived_block_set,
+            "derived_block_justification": derived_block_justification,
             "bridges": selected.get("bridges") or ([capability["bridge"]] if capability.get("bridge") else []),
             "error_response": _protocol_error_response(primary_protocol),
             "ordering_model": _protocol_ordering_model(primary_protocol, peripheral_protocol),
@@ -269,11 +298,14 @@ def generate_architecture_spec(requirement: str, project_name: str = "agent1_soc
                 "interface": "apb_slave",
                 "bus": peripheral_protocol,
                 "memory_map": memory_map.get(peripheral, {}),
-                "interrupt": peripheral in {"uart", "spi", "i2c", "gpio"},
+                "interrupt": peripheral in {"uart", "spi", "i2c", "gpio", "timer"},
             }
             for peripheral in parsed.external_peripherals
         ],
         "architecture_assumptions": parsed.architecture_assumptions,
+        "requested_block_set": requested_block_set,
+        "allowed_derived_block_set": allowed_derived_block_set,
+        "derived_block_justification": derived_block_justification,
         "clock_domains": [{"name": "core_clk", "frequency_mhz": parsed.freq_mhz, "reset": "rst_ni"}],
         "constraints": {
             "power_budget_mw": parsed.power_budget_mw,
@@ -342,6 +374,10 @@ def generate_architecture_plan_markdown(spec: dict[str, Any]) -> str:
         "",
         _executive_summary(spec),
         "",
+        "## Executive Decision Ledger",
+        "",
+        *_executive_decision_ledger_section(spec),
+        "",
         "## AI Expert Council Summary",
         "",
         *_ai_expert_council_section(spec),
@@ -364,6 +400,10 @@ def generate_architecture_plan_markdown(spec: dict[str, Any]) -> str:
         f"| Frequency | {clock.get('frequency_mhz', 'unknown')} MHz | Timing, PPA, bandwidth, SDC, and DV timeout defaults use this clock. |",
         f"| Power | {power_text} | Numeric PPA is tool-backed; no invented power target when unspecified. |",
         "",
+        "## Requirement Coverage",
+        "",
+        *_requirement_coverage_section(spec),
+        "",
         "## Block Diagram",
         "",
         "```mermaid",
@@ -378,11 +418,12 @@ def generate_architecture_plan_markdown(spec: dict[str, Any]) -> str:
         )),
         "  A1 --> FABRIC",
         *(["  FABRIC --> BRIDGE[AHB-to-APB Bridge]", "  BRIDGE --> PERIPH[APB Peripheral Subsystem]"] if primary_protocol == "AHB" and peripheral_protocol == "APB" else []),
-        *[f"  FABRIC --> { _mermaid_id(block) }[{block}]" for block in blocks],
+        *[f"  FABRIC --> { _mermaid_id(block) }[{_mermaid_label(block)}]" for block in blocks],
         "  A1 --> RTL[Agent 2 RTL]",
         "  RTL --> FORMAL[Agent 5 Formal]",
         "  FORMAL --> DV[Agent 3 DV]",
         "  DV --> PHY[Agent 4 Physical]",
+        *(_interrupt_mermaid_class_lines(blocks) if _architecture_uses_interrupts(spec) else []),
         "```",
         "",
         "## Lifecycle State Diagram",
@@ -437,10 +478,19 @@ def generate_architecture_plan_markdown(spec: dict[str, Any]) -> str:
         f"Address width: {bus.get('address_width_bits', 'unknown')} bits",
         "APB slave pinout is locked only for APB-side generated peripheral blocks.",
         "",
+        "## Interface Contract",
+        "",
+        *_interface_contract_section(spec),
+        "",
         "## IP Blocks",
         "",
     ]
     lines.extend(f"- {block}" for block in blocks)
+    derived_justification = spec.get("derived_block_justification", {}) if isinstance(spec.get("derived_block_justification"), dict) else {}
+    if derived_justification:
+        lines.extend(["", "## Block Minimality And Derived Blocks", ""])
+        for block in blocks:
+            lines.append(f"- `{block}`: {derived_justification.get(block, 'no derivation note recorded')}.")
     if primary_protocol == "AHB" and peripheral_protocol == "APB":
         lines.extend(["", "## Bridge And Downstream Compatibility", ""])
         strategy = spec.get("compatibility_strategy", {})
@@ -459,10 +509,16 @@ def generate_architecture_plan_markdown(spec: dict[str, Any]) -> str:
         lines.extend(["", *_spi_plan_section(memory_map["spi"], primary_protocol, peripheral_protocol)])
     if "i2c" in memory_map:
         lines.extend(["", *_i2c_plan_section(memory_map["i2c"])])
+    if "gpio" in memory_map:
+        lines.extend(["", *_gpio_plan_section(memory_map["gpio"])])
+    if "timer" in memory_map:
+        lines.extend(["", *_timer_plan_section(memory_map["timer"])])
     lines.extend(["", "## Memory Map", ""])
     lines.extend(f"- {name}: base {entry['base']}, size {entry['size']}" for name, entry in memory_map.items())
     lines.extend(["", "## Register Map Details", ""])
     lines.extend(_register_map_section(memory_map))
+    lines.extend(["", "## Register And IRQ Semantics", ""])
+    lines.extend(_register_irq_semantics_section(spec))
     lines.extend([
         "",
         "## Assumptions And Open Questions",
@@ -481,6 +537,14 @@ def generate_architecture_plan_markdown(spec: dict[str, Any]) -> str:
         f"- Acceptance Criteria: Agent 5 formal must prove reset, decode, handshake, and register access properties for the selected {primary_protocol}/{peripheral_protocol} boundary before DV signoff.",
         "- Acceptance Criteria: Agent 3 DV must include cocotb read/write/readback tests for every requested register and interrupt clear/mask behavior when interrupts exist.",
         *_peripheral_acceptance_criteria(memory_map),
+        "",
+        "## Verification Plan",
+        "",
+        *_verification_plan_section(spec),
+        "",
+        "## Signoff Evidence Expected",
+        "",
+        *_signoff_evidence_section(spec),
         "",
         "## Timeline",
         "",
@@ -504,11 +568,21 @@ def build_plan_quality_report(spec: dict[str, Any], plan_markdown: str) -> dict[
     uart_required = "uart" in text or "uart" in spec.get("requirements", {}).get("external_peripherals", [])
     spi_required = "spi" in text or "spi" in spec.get("requirements", {}).get("external_peripherals", [])
     i2c_required = "i2c" in text or "i2c" in spec.get("requirements", {}).get("external_peripherals", [])
+    gpio_required = "gpio" in text or "gpio" in spec.get("requirements", {}).get("external_peripherals", [])
+    timer_required = "timer" in text or "watchdog" in text or "timer" in spec.get("requirements", {}).get("external_peripherals", [])
+    lock_required = _requires_lock_register(text)
+    lock_expected_blocks = _expected_lock_register_blocks(spec)
+    i2c_temperature_sensor_required = i2c_required and _i2c_temperature_sensor_required(text)
     block_names = {block.get("name") for block in spec.get("ip_blocks", []) if isinstance(block, dict)}
+    requested_blocks = set(spec.get("requested_block_set") or spec.get("requirements", {}).get("requested_block_set") or [])
+    allowed_derived_blocks = set(spec.get("allowed_derived_block_set") or spec.get("requirements", {}).get("allowed_derived_block_set") or [])
+    unrequested_blocks = sorted(block for block in block_names if requested_blocks and block not in requested_blocks and block not in allowed_derived_blocks)
     slaves = set(spec.get("bus_topology", {}).get("slaves", []))
     uart_regs = set(spec.get("memory_map", {}).get("uart", {}).get("registers", {}))
     spi_regs = set(spec.get("memory_map", {}).get("spi", {}).get("registers", {}))
     i2c_regs = set(spec.get("memory_map", {}).get("i2c", {}).get("registers", {}))
+    gpio_regs = set(spec.get("memory_map", {}).get("gpio", {}).get("registers", {}))
+    timer_regs = set(spec.get("memory_map", {}).get("timer", {}).get("registers", {}))
     lower_plan = plan_markdown.lower()
     requires_clarification = requirement_needs_clarification(raw)
     cpu = spec.get("cpu_subsystem", {})
@@ -527,12 +601,22 @@ def build_plan_quality_report(spec: dict[str, Any], plan_markdown: str) -> dict[
         negative_tokens.append("stale_rv32")
     if requested_bus == "AHB" and "apb fabric" in lower_plan:
         negative_tokens.append("ahb_rewritten_to_apb_fabric")
+    for block in unrequested_blocks:
+        negative_tokens.append(f"unrequested_ip_block:{block}")
     checks = {
         "plan_has_executive_summary": "## executive summary" in lower_plan,
+        "plan_has_executive_decision_ledger": "## executive decision ledger" in lower_plan,
         "plan_has_ai_expert_council_summary": "## ai expert council summary" in lower_plan,
         "plan_has_selected_architecture": "## selected architecture" in lower_plan,
         "plan_has_rejected_alternatives": "## rejected alternatives" in lower_plan,
+        "plan_has_requirement_coverage": "## requirement coverage" in lower_plan,
+        "plan_has_interface_contract": "## interface contract" in lower_plan,
+        "plan_has_register_irq_semantics": "## register and irq semantics" in lower_plan,
+        "plan_has_verification_plan": "## verification plan" in lower_plan and "cocotb" in lower_plan and "sva" in lower_plan,
+        "plan_has_signoff_evidence": "## signoff evidence expected" in lower_plan and "g00" in lower_plan and "g12" in lower_plan,
+        "register_table_has_write_policy": "| write policy |" in lower_plan,
         "plan_has_downstream_capability": "## downstream capability assessment" in lower_plan,
+        "plan_has_block_minimality": not (requested_blocks or allowed_derived_blocks) or "## block minimality and derived blocks" in lower_plan,
         "plan_has_requirement_extraction": "## requirement extraction" in lower_plan,
         "plan_has_acceptance_criteria": "acceptance criteria" in lower_plan,
         "clarification_gate_satisfied": not requires_clarification,
@@ -575,6 +659,40 @@ def build_plan_quality_report(spec: dict[str, Any], plan_markdown: str) -> dict[
             and "timing" in lower_plan
             and "irq_status" in lower_plan
         ),
+        "i2c_temperature_sensor_regs_satisfied": (not i2c_temperature_sensor_required) or (
+            set(I2C_TEMPERATURE_SENSOR_REGISTERS).issubset(i2c_regs)
+            and "temperature_data" in lower_plan
+            and "high_threshold" in lower_plan
+            and "low_threshold" in lower_plan
+        ),
+        "gpio_intent_satisfied": (not gpio_required) or (
+            "gpio" in block_names
+            and "gpio" in slaves
+            and set(GPIO_REQUIRED_REGISTERS).issubset(gpio_regs)
+            and "gpio external peripheral" in lower_plan
+            and "direction" in lower_plan
+            and "irq_status" in lower_plan
+        ),
+        "timer_intent_satisfied": (not timer_required) or (
+            "timer" in block_names
+            and "timer" in slaves
+            and set(TIMER_REQUIRED_REGISTERS).issubset(timer_regs)
+            and "timer/watchdog external peripheral" in lower_plan
+            and "watchdog" in lower_plan
+            and "irq_status" in lower_plan
+        ),
+        "lock_register_intent_satisfied": (not lock_required) or (
+            bool(lock_expected_blocks)
+            and all(LOCK_REGISTER_NAME in spec.get("memory_map", {}).get(block, {}).get("registers", {}) for block in lock_expected_blocks)
+            and "lock" in lower_plan
+            and "set-only" in lower_plan
+        ),
+        "mermaid_interrupt_highlight": ("interrupt_ctrl" not in block_names) or (
+            "classdef interrupt" in lower_plan
+            and "class interrupt_ctrl interrupt" in lower_plan
+            and "interrupt controller" in lower_plan
+        ),
+        "block_minimality_satisfied": not unrequested_blocks,
         "negative_token_clean": not negative_tokens,
         "downstream_capability_declared": requested_bus not in {"AHB", "AXI", "WISHBONE"} or bool(spec.get("compatibility_strategy")) and ("compatibility" in lower_plan or "capability" in lower_plan or "bridge" in lower_plan),
     }
@@ -588,10 +706,18 @@ def build_plan_quality_report(spec: dict[str, Any], plan_markdown: str) -> dict[
             "uart_required": uart_required,
             "spi_required": spi_required,
             "i2c_required": i2c_required,
+            "gpio_required": gpio_required,
+            "timer_required": timer_required,
+            "lock_register_required": lock_required,
+            "lock_expected_blocks": lock_expected_blocks,
+            "i2c_temperature_sensor_required": i2c_temperature_sensor_required,
             "requested_bus_protocol": requested_bus,
             "external_peripherals": spec.get("requirements", {}).get("external_peripherals", []),
             "requires_clarification": requires_clarification,
             "negative_tokens": negative_tokens,
+            "unrequested_ip_blocks": unrequested_blocks,
+            "requested_block_set": sorted(requested_blocks),
+            "allowed_derived_block_set": sorted(allowed_derived_blocks),
         },
         "checks": checks,
         "failures": failures,
@@ -647,9 +773,29 @@ def _extract_power_budget_mw(text: str) -> int | None:
 
 
 def _extract_bus_protocol(text: str) -> str | None:
-    for bus in ("ahb", "apb", "axi", "wishbone"):
-        if re.search(rf"\b{bus}\b", text):
-            return bus.upper()
+    patterns = (
+        ("APB", r"\bapb(?:\d(?:[-_ ]?lite)?)?\b"),
+        ("AHB", r"\bahb(?:\d(?:[-_ ]?lite)?)?\b"),
+        ("AXI", r"\baxi(?:\d(?:[-_ ]?lite)?)?\b"),
+        ("WISHBONE", r"\bwishbone\b"),
+    )
+    candidates: list[tuple[int, str]] = []
+    for protocol, pattern in patterns:
+        for match in re.finditer(pattern, text):
+            if not _mention_is_negated(text, match.start(), match.end()):
+                candidates.append((match.start(), protocol))
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: item[0])[0][1]
+
+def _mention_is_negated(text: str, start: int, end: int) -> bool:
+    clause_start = max(text.rfind(mark, 0, start) for mark in ("\n", ".", ";", ":")) + 1
+    prefix = text[clause_start:start]
+    suffix = text[end:min(len(text), end + 48)]
+    return bool(
+        re.search(r"\b(no|without|not|non|exclude|forbid|forbidden|avoid|do\s+not|dont|don't)\b.{0,80}$", prefix)
+        or re.search(r"^.{0,48}\b(not|required|needed|allowed|generated|invented)\b", suffix)
+    )
     return None
 
 
@@ -671,11 +817,25 @@ def _extract_cpu_width_bits(text: str) -> int | None:
 
 
 def _cpu_requested(text: str) -> bool:
+    if _negates_design_keyword(text, "cpu"):
+        return False
     return bool(re.search(r"\b(cpu|processor|risc[- ]?v|riscv|rv32|rv64|multi[- ]?core|multicore)\b", text))
 
 
+def _negates_design_keyword(text: str, keyword: str) -> bool:
+    escaped = re.escape(keyword)
+    return bool(
+        re.search(rf"\b(no|without|not|non|exclude|forbid|forbidden|avoid|do\s+not|dont|don't)\b[^.;:\n]{{0,80}}\b{escaped}\b", text)
+        or re.search(rf"\b{escaped}\b[^.;:\n]{{0,48}}\b(not|required|needed|allowed|generated|invented)\b", text)
+        or (keyword == "cpu" and re.search(r"\b(external\s+apb\s+host|peripheral[- ]?only)\b", text))
+    )
+
+
 def _extract_external_peripherals(text: str) -> list[str]:
-    return [peripheral for peripheral in SUPPORTED_EXTERNAL_PERIPHERALS if re.search(rf"\b{peripheral}\b", text)]
+    peripherals = [peripheral for peripheral in SUPPORTED_EXTERNAL_PERIPHERALS if re.search(rf"\b{peripheral}\b", text)]
+    if "timer" not in peripherals and re.search(r"\bwatchdog\b", text) and not _negates_design_keyword(text, "watchdog"):
+        peripherals.append("timer")
+    return peripherals
 
 
 def _has_substantive_chip_intent_text(requirement: str) -> bool:
@@ -725,6 +885,43 @@ def _architecture_assumptions(parsed: ParsedRequirement) -> list[str]:
         assumptions.append("I2C bus speed not provided; Agent 1 exposes programmable timing register.")
     return assumptions or ["All critical architecture assumptions were specified in the user requirement."]
 
+
+def _requires_interrupt_controller(parsed: ParsedRequirement, wants_aes: bool) -> bool:
+    text = parsed.raw.lower()
+    if parsed.cpu_requested and any(item in parsed.external_peripherals for item in ("uart", "spi", "i2c", "gpio", "timer")):
+        return True
+    if wants_aes:
+        return True
+    explicit_irq_aggregator = "interrupt controller" in text or "irq aggregator" in text or "nested interrupt" in text
+    if explicit_irq_aggregator and not _negates_design_keyword(text, "interrupt controller") and not _negates_design_keyword(text, "irq aggregator"):
+        return True
+    return _i2c_temperature_sensor_required(parsed.raw)
+
+def _derived_block_justification(ip_blocks: list[str], parsed: ParsedRequirement, wants_aes: bool, needs_interrupt_ctrl: bool) -> dict[str, str]:
+    requested = set(parsed.external_peripherals)
+    if wants_aes:
+        requested.add("aes128_core")
+    if parsed.mac_units:
+        requested.add("mac_array")
+    justifications: dict[str, str] = {}
+    for block in ip_blocks:
+        if block in requested:
+            justifications[block] = "explicitly requested by user requirement"
+        elif block == "apb_interconnect":
+            justifications[block] = "derived peripheral decode interconnect required to connect master and slaves"
+        elif block == "control_regs":
+            justifications[block] = "derived CPU subsystem control/status register shell"
+        elif block == "timer":
+            justifications[block] = "derived CPU platform timer; not added for peripheral-only requests"
+        elif block == "interrupt_ctrl":
+            justifications[block] = "derived only when CPU IRQ fan-in, AES IRQ, explicit IRQ aggregator, or I2C threshold interrupt requires top-level interrupt collection" if needs_interrupt_ctrl else "unexpected derived interrupt controller"
+        elif block == "dma_engine":
+            justifications[block] = "derived for AI/MAC data movement workload"
+        elif block == "sram_controller":
+            justifications[block] = "derived for AI/MAC local SRAM workload"
+        else:
+            justifications[block] = "derived by deterministic architecture rule"
+    return justifications
 
 def _intent_unknowns(parsed: ParsedRequirement) -> list[str]:
     text = parsed.raw.lower()
@@ -834,8 +1031,8 @@ def _spi_registers() -> dict[str, dict[str, Any]]:
     }
 
 
-def _i2c_registers() -> dict[str, dict[str, Any]]:
-    return {
+def _i2c_registers(requirement: str = "") -> dict[str, dict[str, Any]]:
+    registers = {
         "txdata": {"offset": "0x00", "width_bits": 32, "reset": "0", "access": "wo", "description": "Write transmit byte/data word."},
         "rxdata": {"offset": "0x04", "width_bits": 32, "reset": "0", "access": "ro", "description": "Read received byte/data word."},
         "status": {"offset": "0x08", "width_bits": 32, "reset": "0", "access": "ro", "fields": ["busy", "rx_valid", "ack_error", "arbitration_lost"]},
@@ -845,7 +1042,113 @@ def _i2c_registers() -> dict[str, dict[str, Any]]:
         "irq_status": {"offset": "0x18", "width_bits": 32, "reset": "0", "access": "w1c", "clear": "W1C", "fields": ["done_irq", "rx_irq", "error_irq"]},
         "irq_enable": {"offset": "0x1C", "width_bits": 32, "reset": "0", "access": "rw", "fields": ["done_irq_en", "rx_irq_en", "error_irq_en"]},
     }
+    if _i2c_temperature_sensor_required(requirement):
+        registers.update({
+            "temperature_data": {
+                "offset": "0x20",
+                "width_bits": 32,
+                "reset": "0",
+                "access": "ro",
+                "fields": ["temperature_sample", "sample_valid"],
+                "description": "Latest sampled temperature value read from the I2C sensor.",
+            },
+            "high_threshold": {
+                "offset": "0x24",
+                "width_bits": 32,
+                "reset": "0",
+                "access": "rw",
+                "fields": ["high_threshold_value"],
+                "description": "Firmware-programmable high temperature threshold.",
+            },
+            "low_threshold": {
+                "offset": "0x28",
+                "width_bits": 32,
+                "reset": "0",
+                "access": "rw",
+                "fields": ["low_threshold_value"],
+                "description": "Firmware-programmable low temperature threshold.",
+            },
+        })
+        registers["irq_status"]["fields"] = ["done_irq", "rx_irq", "error_irq", "high_threshold_irq", "low_threshold_irq"]
+        registers["irq_enable"]["fields"] = ["done_irq_en", "rx_irq_en", "error_irq_en", "high_threshold_irq_en", "low_threshold_irq_en"]
+    return registers
 
+def _gpio_registers(include_lock: bool = False) -> dict[str, dict[str, Any]]:
+    registers = {
+        "data_in": {"offset": "0x00", "width_bits": 32, "reset": "0", "access": "ro", "fields": ["gpio_input_sample"]},
+        "data_out": {"offset": "0x04", "width_bits": 32, "reset": "0", "access": "rw", "fields": ["gpio_output_value"]},
+        "direction": {"offset": "0x08", "width_bits": 32, "reset": "0", "access": "rw", "fields": ["1_output_0_input"], "lock_protected": include_lock},
+        "irq_type": {"offset": "0x0C", "width_bits": 32, "reset": "0", "access": "rw", "fields": ["edge_or_level_select"]},
+        "irq_status": {"offset": "0x10", "width_bits": 32, "reset": "0", "access": "w1c", "clear": "W1C", "fields": ["pin_irq_status"]},
+        "irq_enable": {"offset": "0x14", "width_bits": 32, "reset": "0", "access": "rw", "fields": ["pin_irq_enable"]},
+    }
+    if include_lock:
+        registers[LOCK_REGISTER_NAME] = {
+            "offset": "0x18",
+            "width_bits": 32,
+            "reset": "0",
+            "access": "rw",
+            "write_policy": "set_only",
+            "fields": ["lock_enable"],
+            "description": "Set-only lock register; bit 0 freezes GPIO direction writes until reset.",
+        }
+    return registers
+
+def _timer_registers(include_lock: bool = False) -> dict[str, dict[str, Any]]:
+    registers = {
+        "ctrl": {"offset": "0x00", "width_bits": 32, "reset": "0", "access": "rw", "fields": ["enable", "periodic", "watchdog_enable", "irq_enable_global"], "lock_protected": include_lock},
+        "load": {"offset": "0x04", "width_bits": 32, "reset": "0", "access": "rw", "description": "Timer reload/timeout value."},
+        "value": {"offset": "0x08", "width_bits": 32, "reset": "0", "access": "ro", "description": "Current down-counter value."},
+        "prescale": {"offset": "0x0C", "width_bits": 32, "reset": "0", "access": "rw", "description": "Clock prescaler for timer tick generation."},
+        "watchdog": {"offset": "0x10", "width_bits": 32, "reset": "0", "access": "wo", "description": "Watchdog service/kick register."},
+        "irq_status": {"offset": "0x14", "width_bits": 32, "reset": "0", "access": "w1c", "clear": "W1C", "fields": ["timeout_irq", "watchdog_irq"]},
+        "irq_enable": {"offset": "0x18", "width_bits": 32, "reset": "0", "access": "rw", "fields": ["timeout_irq_en", "watchdog_irq_en"]},
+    }
+    if include_lock:
+        registers[LOCK_REGISTER_NAME] = {
+            "offset": "0x1C",
+            "width_bits": 32,
+            "reset": "0",
+            "access": "rw",
+            "write_policy": "set_only",
+            "fields": ["lock_enable"],
+            "description": "Set-only lock register; bit 0 freezes watchdog/timer control writes until reset.",
+        }
+    return registers
+
+def _i2c_temperature_sensor_required(requirement: str) -> bool:
+    text = requirement.lower()
+    return "i2c" in text and any(token in text for token in ("temperature", "thermal", "temp", "sensor", "threshold"))
+
+def _requires_lock_register(text: str) -> bool:
+    """Detect real CSR/register lock intent without matching locked APB pinout text."""
+    lower = text.lower()
+    patterns = (
+        r"\block(?:able|ed)?\s+(?:register|registers|csr|csrs|security|control)\b",
+        r"\b(?:register|registers|csr|csrs)\s+(?:are\s+)?(?:lockable|locked)\b",
+        r"\block\s+prevents\b",
+        r"\bafter\s+lock\b",
+        r"\bprotected\s+register",
+    )
+    return any(re.search(pattern, lower) for pattern in patterns)
+
+def _lock_applies_to_block(requirement: str, block: str) -> bool:
+    text = requirement.lower()
+    if not _requires_lock_register(text):
+        return False
+    if block == "gpio":
+        return any(token in text for token in ("gpio", "direction", "pin"))
+    if block == "timer":
+        return any(token in text for token in ("timer", "watchdog", "disable", "kick", "service"))
+    return False
+
+
+def _expected_lock_register_blocks(spec: dict[str, Any]) -> list[str]:
+    raw = str(spec.get("requirements", {}).get("raw") or "")
+    if not _requires_lock_register(raw):
+        return []
+    memory_map = spec.get("memory_map", {}) if isinstance(spec.get("memory_map"), dict) else {}
+    return [block for block in ("gpio", "timer") if block in memory_map and _lock_applies_to_block(raw, block)]
 
 def _firmware_contract(parsed: ParsedRequirement, wants_aes: bool) -> dict[str, Any] | None:
     hal_modules = []
@@ -888,7 +1191,7 @@ def _firmware_contract(parsed: ParsedRequirement, wants_aes: bool) -> dict[str, 
     if "i2c" in parsed.external_peripherals:
         hal_modules.append("i2c_hal")
         interrupt_flow.extend(["i2c.irq_status.done_irq W1C", "i2c.irq_status.rx_irq W1C", "i2c.irq_status.error_irq W1C"])
-        semantics.update({
+        i2c_semantics = {
             "i2c.txdata": {"access": "wo", "producer": "firmware"},
             "i2c.rxdata": {"access": "ro", "consumer": "firmware"},
             "i2c.status": {"access": "ro", "fields": ["busy", "rx_valid", "ack_error", "arbitration_lost"]},
@@ -897,7 +1200,42 @@ def _firmware_contract(parsed: ParsedRequirement, wants_aes: bool) -> dict[str, 
             "i2c.timing": {"access": "rw", "purpose": "SCL timing divider"},
             "i2c.irq_status": {"access": "w1c", "clear": "W1C"},
             "i2c.irq_enable": {"access": "rw"},
+        }
+        if _i2c_temperature_sensor_required(parsed.raw):
+            interrupt_flow.extend(["i2c.irq_status.high_threshold_irq W1C", "i2c.irq_status.low_threshold_irq W1C"])
+            i2c_semantics.update({
+                "i2c.temperature_data": {"access": "ro", "consumer": "firmware", "purpose": "latest sensor temperature sample"},
+                "i2c.high_threshold": {"access": "rw", "producer": "firmware", "purpose": "high temperature interrupt threshold"},
+                "i2c.low_threshold": {"access": "rw", "producer": "firmware", "purpose": "low temperature interrupt threshold"},
+            })
+        semantics.update(i2c_semantics)
+    if "gpio" in parsed.external_peripherals:
+        hal_modules.append("gpio_hal")
+        interrupt_flow.extend(["gpio.irq_status.pin_irq_status W1C"])
+        semantics.update({
+            "gpio.data_in": {"access": "ro", "consumer": "firmware"},
+            "gpio.data_out": {"access": "rw", "producer": "firmware"},
+            "gpio.direction": {"access": "rw", "purpose": "per-pin output enable", "lock_protected": _lock_applies_to_block(parsed.raw, "gpio")},
+            "gpio.irq_type": {"access": "rw", "purpose": "edge/level interrupt selection"},
+            "gpio.irq_status": {"access": "w1c", "clear": "W1C"},
+            "gpio.irq_enable": {"access": "rw"},
         })
+        if _lock_applies_to_block(parsed.raw, "gpio"):
+            semantics["gpio.lock"] = {"access": "rw", "write_policy": "set_only", "purpose": "freeze GPIO direction writes until reset"}
+    if "timer" in parsed.external_peripherals:
+        hal_modules.append("timer_hal")
+        interrupt_flow.extend(["timer.irq_status.timeout_irq W1C", "timer.irq_status.watchdog_irq W1C"])
+        semantics.update({
+            "timer.ctrl": {"access": "rw", "purpose": "enable/periodic/watchdog control", "lock_protected": _lock_applies_to_block(parsed.raw, "timer")},
+            "timer.load": {"access": "rw", "producer": "firmware"},
+            "timer.value": {"access": "ro", "consumer": "firmware"},
+            "timer.prescale": {"access": "rw", "purpose": "tick divider"},
+            "timer.watchdog": {"access": "wo", "purpose": "watchdog service register"},
+            "timer.irq_status": {"access": "w1c", "clear": "W1C"},
+            "timer.irq_enable": {"access": "rw"},
+        })
+        if _lock_applies_to_block(parsed.raw, "timer"):
+            semantics["timer.lock"] = {"access": "rw", "write_policy": "set_only", "purpose": "freeze watchdog/timer ctrl writes until reset"}
     if not hal_modules:
         return None
     return {
@@ -940,21 +1278,54 @@ def _executive_summary(spec: dict[str, Any]) -> str:
         f"the memory map before RTL generation so Agent 2, Agent 3, Agent 4, and Agent 5 share one contract.{bridge}"
     )
 
+def _executive_decision_ledger_section(spec: dict[str, Any]) -> list[str]:
+    bus = spec.get("bus_topology", {})
+    bus_arch = spec.get("bus_architecture", {})
+    cpu = spec.get("cpu_subsystem", {})
+    primary = str(bus_arch.get("primary_protocol") or bus.get("protocol", "APB")).upper()
+    peripheral = str(bus_arch.get("peripheral_protocol") or bus.get("protocol", primary)).upper()
+    blocks = [block.get("name", "") for block in spec.get("ip_blocks", []) if isinstance(block, dict)]
+    rows = [
+        "| Decision | Selected | Why this is safe for downstream |",
+        "|---|---|---|",
+        f"| Control model | {'Generated CPU master' if _cpu_is_generated(spec) else 'External verification/host master'} | Matches cited CPU intent; avoids inventing a CPU when user asked for peripheral-only IP. |",
+        f"| Bus boundary | {primary} primary / {peripheral} peripheral | Preserves user protocol while keeping APB-side locked-port collateral stable for Agent2/3/5. |",
+        f"| Generated blocks | {', '.join(blocks) or 'none'} | Block list is derived from requested IP plus justified support logic only. |",
+        f"| Clock/reset | {spec.get('clock_domains', [{}])[0].get('frequency_mhz', 'unknown')} MHz / {spec.get('clock_domains', [{}])[0].get('reset', 'rst_ni')} | One explicit clock domain gives deterministic SDC, SVA disable, and DV timeout assumptions. |",
+        f"| Firmware contract | {len(_all_register_rows(spec.get('memory_map', {})))} registers | Register JSON, SystemRDL, C header, and DV model must remain consistent before handoff. |",
+    ]
+    if _cpu_is_generated(spec):
+        rows.append(f"| ISA | {cpu.get('isa', spec.get('isa', 'rv32imc'))} | ISA follows CPU width intent and keeps the CPU as master, not a peripheral slave. |")
+    return rows
+
 
 def _ai_expert_council_section(spec: dict[str, Any]) -> list[str]:
     analysis = spec.get("agent1_ai_requirement_analysis", {}) if isinstance(spec.get("agent1_ai_requirement_analysis"), dict) else {}
     experts = analysis.get("expert_outputs", []) if isinstance(analysis.get("expert_outputs"), list) else []
+    council = analysis.get("v51_council", {}) if isinstance(analysis.get("v51_council"), dict) else {}
+    lite = council.get("normal_lite_council", {}) if isinstance(council.get("normal_lite_council"), dict) else {}
+    live_calls = lite.get("live_call_count")
+    planned_calls = lite.get("planned_call_count")
     lines = [
-        f"- Expert calls: {len(experts)}.",
+        (
+            f"- Live expert calls: {live_calls} of {planned_calls} Normal Lite Council calls completed."
+            if live_calls is not None
+            else f"- Council evidence records: {len(experts)}."
+        ),
         f"- Analysis schema: {analysis.get('schema_version', 'agent1.ai_requirement_analysis.v1')}.",
         f"- Confidence: {analysis.get('confidence', 'unknown')}.",
     ]
+    if lite:
+        if int(live_calls or 0) > 0:
+            lines.append(f"- Normal Lite Council status: {lite.get('status', 'unknown')}; reason: {lite.get('reason', 'not recorded')}.")
+        else:
+            lines.append(f"- Deterministic fallback used: {lite.get('reason', 'live expert evidence unavailable')}.")
     for item in experts[:8]:
         if isinstance(item, dict):
             output = item.get("output", {}) if isinstance(item.get("output"), dict) else {}
             lines.append(f"- {item.get('title', item.get('expert_id', 'expert'))}: {output.get('summary', 'completed')}")
     if not experts:
-        lines.append("- Deterministic fallback analysis used when no live expert trace is attached.")
+        lines.append("- Fast deterministic intake council used; live expert calls were not required or were unavailable.")
     return lines
 
 
@@ -982,15 +1353,65 @@ def _selected_architecture_section(spec: dict[str, Any]) -> list[str]:
     ]
 
 
+def _requirement_coverage_section(spec: dict[str, Any]) -> list[str]:
+    requirements = spec.get("requirements", {}) if isinstance(spec.get("requirements"), dict) else {}
+    extracted = requirements.get("extracted_intents", {}) if isinstance(requirements.get("extracted_intents"), dict) else {}
+    peripherals = requirements.get("external_peripherals", [])
+    return [
+        "| Intent | Coverage | Evidence location |",
+        "|---|---|---|",
+        f"| Raw requirement | covered | `requirements.raw` plus architecture plan trace. |",
+        f"| CPU intent | {'generated CPU' if requirements.get('cpu_requested') else 'peripheral-only / external host'} | `cpu_subsystem.synthesized_cpu`. |",
+        f"| Bus intent | {extracted.get('requested_bus_protocol') or spec.get('bus_architecture', {}).get('primary_protocol', 'APB')} | `bus_architecture.primary_protocol`. |",
+        f"| Peripheral intent | {', '.join(peripherals) or 'none declared'} | `memory_map`, SystemRDL, firmware header, DV model. |",
+        f"| Frequency | {extracted.get('frequency_mhz') or spec.get('clock_domains', [{}])[0].get('frequency_mhz', 'unknown')} MHz | `clock_domains[0].frequency_mhz`. |",
+        f"| Lock intent | {'covered with set-only lock register' if _expected_lock_register_blocks(spec) else 'not requested'} | `memory_map.*.registers.lock.write_policy`. |",
+    ]
+
 def _rejected_alternatives_section(spec: dict[str, Any]) -> list[str]:
     analysis = spec.get("agent1_ai_requirement_analysis", {}) if isinstance(spec.get("agent1_ai_requirement_analysis"), dict) else {}
     rejected = analysis.get("rejected_alternatives", []) if isinstance(analysis.get("rejected_alternatives"), list) else []
-    if not rejected:
-        return ["- No conflicting architecture alternative was rejected for this requirement."]
     lines = []
     for item in rejected:
         if isinstance(item, dict):
             lines.append(f"- {item.get('name', 'alternative')}: {item.get('reason', 'rejected by principal architect synthesis')}")
+    bus_arch = spec.get("bus_architecture", {})
+    primary = str(bus_arch.get("primary_protocol") or spec.get("bus_topology", {}).get("protocol", "APB")).upper()
+    peripheral = str(bus_arch.get("peripheral_protocol") or primary).upper()
+    if primary == "APB":
+        lines.append("- AHB/AXI primary fabric: rejected because this APB-side requirement does not cite ordering, burst, or bridge needs; APB keeps formal/DV scope tight.")
+    elif primary == "AHB" and peripheral == "APB":
+        lines.append("- APB-only rewrite: rejected because AHB was cited as primary intent; the bridge preserves user protocol while keeping downstream APB collateral usable.")
+        lines.append("- AXI-lite primary fabric: rejected because no AXI ecosystem, ordering, or interconnect requirement was cited.")
+    if not _cpu_is_generated(spec):
+        lines.append("- Generated CPU subsystem: rejected because no CPU/ISA intent was cited; external host control avoids inventing architecture.")
+    requested = set(spec.get("requested_block_set") or spec.get("requirements", {}).get("requested_block_set") or [])
+    allowed = set(spec.get("allowed_derived_block_set") or spec.get("requirements", {}).get("allowed_derived_block_set") or [])
+    if requested or allowed:
+        lines.append("- Extra unrequested IP blocks: rejected unless they appear as justified derived support logic in Block Minimality.")
+    if _architecture_uses_interrupts(spec):
+        lines.append("- Local-only IRQ status with no aggregation: rejected because derived IRQ fan-in needs a traceable interrupt controller boundary.")
+    else:
+        lines.append("- Top-level interrupt controller: rejected because current requested blocks do not require an unrequested IRQ aggregator.")
+    return lines
+
+def _interface_contract_section(spec: dict[str, Any]) -> list[str]:
+    bus = spec.get("bus_topology", {})
+    bus_arch = spec.get("bus_architecture", {})
+    primary = str(bus_arch.get("primary_protocol") or bus.get("protocol", "APB")).upper()
+    peripheral = str(bus_arch.get("peripheral_protocol") or bus.get("protocol", primary)).upper()
+    bridges = bus_arch.get("bridges", []) if isinstance(bus_arch.get("bridges"), list) else []
+    lines = [
+        f"- Primary master side: `{primary}`; downstream peripheral side: `{peripheral}`.",
+        f"- Data/address width: {bus.get('data_width_bits', 'unknown')} / {bus.get('address_width_bits', 'unknown')} bits.",
+        "- APB-side port names remain locked for generated peripheral slaves; Agent2 must not rename locked ports.",
+        "- Decode contract: one 4KB window per generated slave unless user changes the map before approval.",
+        f"- Error response: {bus_arch.get('error_response', 'defined slave error response')}.",
+        f"- Ordering model: {bus_arch.get('ordering_model', 'memory-mapped IO ordering')}.",
+    ]
+    for bridge in bridges:
+        if isinstance(bridge, dict):
+            lines.append(f"- Bridge: `{bridge.get('name', 'bridge')}` from {bridge.get('from_protocol', primary)} to {bridge.get('to_protocol', peripheral)} at `{bridge.get('boundary', 'peripheral_subsystem')}`.")
     return lines
 
 
@@ -1038,7 +1459,8 @@ def _spi_plan_section(spi_map: dict[str, Any], primary_protocol: str, peripheral
 
 
 def _i2c_plan_section(i2c_map: dict[str, Any]) -> list[str]:
-    return [
+    registers = i2c_map.get("registers", {})
+    lines = [
         "## I2C External Peripheral",
         "",
         f"- Bus attachment: I2C is an APB slave at base {i2c_map.get('base', 'unknown')}.",
@@ -1049,7 +1471,44 @@ def _i2c_plan_section(i2c_map: dict[str, Any]) -> list[str]:
         "- Interrupts: `irq_status` is W1C and paired with `irq_enable` for done/RX/error events.",
         "- DV focus: APB register read/write/readback, command bit behavior, interrupt clear/mask behavior, and reset values.",
     ]
+    if set(I2C_TEMPERATURE_SENSOR_REGISTERS).issubset(registers):
+        lines.extend([
+            "- Temperature sample: `temperature_data` exposes the latest I2C sensor sample to firmware.",
+            "- Thresholds: `high_threshold` and `low_threshold` are firmware-programmable temperature interrupt thresholds.",
+            "- Temperature interrupts: `irq_status` includes high/low threshold bits, cleared through W1C writes.",
+        ])
+    return lines
 
+
+def _gpio_plan_section(gpio_map: dict[str, Any]) -> list[str]:
+    registers = gpio_map.get("registers", {})
+    lines = [
+        "## GPIO External Peripheral",
+        "",
+        f"- Bus attachment: GPIO is an APB slave at base {gpio_map.get('base', 'unknown')}.",
+        "- Function: 32-bit GPIO bank with input sample, output data, per-pin direction, and interrupt control.",
+        "- Direction/data: `direction`, `data_out`, and `data_in` define the firmware-visible pin contract.",
+        "- Interrupts: `irq_status` is W1C and paired with `irq_enable`; `irq_type` selects edge/level behavior.",
+        "- DV focus: reset values, direction-controlled output writes, input reads, IRQ mask/clear, and illegal address response.",
+    ]
+    if LOCK_REGISTER_NAME in registers:
+        lines.insert(-1, "- Lock policy: `lock` is set-only and freezes `direction` writes until reset.")
+    return lines
+
+def _timer_plan_section(timer_map: dict[str, Any]) -> list[str]:
+    registers = timer_map.get("registers", {})
+    lines = [
+        "## Timer/Watchdog External Peripheral",
+        "",
+        f"- Bus attachment: Timer/watchdog is an APB slave at base {timer_map.get('base', 'unknown')}.",
+        "- Function: 32-bit timer with programmable reload, prescaler, timeout IRQ, and watchdog service register.",
+        "- Timer control: `ctrl`, `load`, `value`, and `prescale` lock the count/control register contract.",
+        "- Watchdog: `watchdog` is write-only service intent and `irq_status` exposes timeout/watchdog events through W1C.",
+        "- DV focus: countdown/reload behavior, watchdog service writes, IRQ mask/clear, reset values, and illegal address response.",
+    ]
+    if LOCK_REGISTER_NAME in registers:
+        lines.insert(-1, "- Lock policy: `lock` is set-only and freezes watchdog/timer `ctrl` writes until reset.")
+    return lines
 
 def _peripheral_acceptance_criteria(memory_map: dict[str, Any]) -> list[str]:
     criteria: list[str] = []
@@ -1058,24 +1517,138 @@ def _peripheral_acceptance_criteria(memory_map: dict[str, Any]) -> list[str]:
     if "spi" in memory_map:
         criteria.append("- Acceptance Criteria: SPI `ctrl`, `status`, `txdata`, `rxdata`, `clk_div`, `cs`, `irq_status`, and `irq_enable` registers must appear consistently in JSON, SystemRDL, firmware header, and DV register model.")
     if "i2c" in memory_map:
-        criteria.append("- Acceptance Criteria: I2C `target_addr`, `timing`, `irq_status`, and `irq_enable` registers must appear consistently in JSON, SystemRDL, firmware header, and DV register model.")
+        i2c_regs = memory_map.get("i2c", {}).get("registers", {})
+        if set(I2C_TEMPERATURE_SENSOR_REGISTERS).issubset(i2c_regs):
+            criteria.append("- Acceptance Criteria: I2C temperature sensor `temperature_data`, `high_threshold`, `low_threshold`, `target_addr`, `timing`, `irq_status`, and `irq_enable` registers must appear consistently in JSON, SystemRDL, firmware header, and DV register model.")
+        else:
+            criteria.append("- Acceptance Criteria: I2C `target_addr`, `timing`, `irq_status`, and `irq_enable` registers must appear consistently in JSON, SystemRDL, firmware header, and DV register model.")
+    if "gpio" in memory_map:
+        gpio_regs = memory_map.get("gpio", {}).get("registers", {})
+        lock_tail = ", and `lock` set-only protection" if LOCK_REGISTER_NAME in gpio_regs else ""
+        criteria.append(f"- Acceptance Criteria: GPIO `data_in`, `data_out`, `direction`, `irq_type`, `irq_status`, and `irq_enable` registers{lock_tail} must appear consistently in JSON, SystemRDL, firmware header, and DV register model.")
+    if "timer" in memory_map:
+        timer_regs = memory_map.get("timer", {}).get("registers", {})
+        lock_tail = ", and `lock` set-only protection" if LOCK_REGISTER_NAME in timer_regs else ""
+        criteria.append(f"- Acceptance Criteria: Timer/watchdog `ctrl`, `load`, `value`, `prescale`, `watchdog`, `irq_status`, and `irq_enable` registers{lock_tail} must appear consistently in JSON, SystemRDL, firmware header, and DV register model.")
     return criteria
+
+def _register_irq_semantics_section(spec: dict[str, Any]) -> list[str]:
+    memory_map = spec.get("memory_map", {}) if isinstance(spec.get("memory_map"), dict) else {}
+    lines = [
+        "- Register JSON is source of truth for SystemRDL, firmware header, and DV register model generation.",
+        "- `irq_status` registers use explicit clear policy when present; `irq_enable` masks firmware-visible events.",
+        "- Lock registers are fail-closed: once set, protected control writes stay blocked until reset.",
+    ]
+    for block in _expected_lock_register_blocks(spec):
+        lock = memory_map.get(block, {}).get("registers", {}).get("lock", {}) if isinstance(memory_map.get(block, {}), dict) else {}
+        if isinstance(lock, dict):
+            lines.append(f"- `{block}.lock`: access `{lock.get('access', 'rw')}`, write policy `{lock.get('write_policy', 'set_only')}` (set-only), guards protected writes until reset.")
+    if not _architecture_uses_interrupts(spec):
+        lines.append("- No top-level interrupt controller is generated unless IRQ fan-in is required or explicitly requested.")
+    return lines
+
+def _verification_plan_section(spec: dict[str, Any]) -> list[str]:
+    memory_map = spec.get("memory_map", {}) if isinstance(spec.get("memory_map"), dict) else {}
+    bus_arch = spec.get("bus_architecture", {}) if isinstance(spec.get("bus_architecture"), dict) else {}
+    protocol = str(bus_arch.get("peripheral_protocol") or bus_arch.get("primary_protocol") or "APB").lower()
+    rows = [
+        "| Layer | Required checks | Evidence expected |",
+        "|---|---|---|",
+        f"| Formal SVA | `p_{protocol}_reset_known`, `p_{protocol}_decode_stable`, `p_{protocol}_ready_handshake`, `p_register_reset_values` | Agent5 SVA wrappers and SymbiYosys collateral. |",
+        "| cocotb DV | reset, legal read/write/readback, illegal address response, back-to-back accesses | Agent3 cocotb regression and Makefile. |",
+        "| Negative tests | write read-only register, read write-only register, clear W1C incorrectly, access unmapped address | DV failure-mode coverage before signoff. |",
+    ]
+    if any("irq_status" in entry.get("registers", {}) for entry in memory_map.values() if isinstance(entry, dict)):
+        rows.append("| IRQ tests | mask/enable, W1C clear, pending status persistence, top-level IRQ assertion | cocotb IRQ scenario plus SVA status-clear properties. |")
+    if _expected_lock_register_blocks(spec):
+        rows.append("| Lock tests | set-only lock write, post-lock protected write rejection, reset-only unlock | Agent2 guarded RTL plus cocotb/SVA lock regression. |")
+    return rows
+
+def _signoff_evidence_section(spec: dict[str, Any]) -> list[str]:
+    return [
+        "| Gate | Evidence required before Agent2 handoff |",
+        "|---|---|",
+        "| G00 | run manifest, run_id, revision_id current and non-stale. |",
+        "| G01 | requirement coverage maps raw input to spec decisions. |",
+        "| G02 | council/intake trace has no unresolved blocking challenge. |",
+        "| G03 | required Agent1 artifacts exist and are current. |",
+        "| G04 | architecture contract schema validates. |",
+        "| G05 | memory map, registers, IRQ, lock/set-only policy are consistent. |",
+        "| G06 | formal-first collateral plan exists before DV. |",
+        "| G07 | safety/security/power/clock/reset assumptions are explicit. |",
+        "| G08 | numeric PPA/bandwidth claims have deterministic tool provenance. |",
+        "| G09 | independent critic has no high-severity release blocker. |",
+        "| G10 | waivers validate and do not hide P0/P1 non-waivable issues. |",
+        "| G11 | final signoff certificate allows handoff. |",
+        "| G12 | benchmark proof report meets corpus and false-pass thresholds. |",
+    ]
 
 
 def _register_map_section(memory_map: dict[str, Any]) -> list[str]:
-    lines = ["| Block | Base | Register | Offset | Access | Width | Reset |", "|---|---:|---|---:|---|---:|---:|"]
+    lines = ["| Block | Base | Register | Offset | Access | Write Policy | Side Effect / Lock Guard | Width | Reset |", "|---|---:|---|---:|---|---|---|---:|---:|"]
     for block, entry in memory_map.items():
         regs = entry.get("registers", {})
         if not regs:
-            lines.append(f"| {block} | {entry.get('base', '')} | window reserved | 0x00 | n/a | n/a | n/a |")
+            lines.append(f"| {block} | {entry.get('base', '')} | window reserved | 0x00 | n/a | n/a | reserved decode window | n/a | n/a |")
             continue
         for reg, meta in regs.items():
+            write_policy = _register_write_policy(reg, meta)
+            side_effect = _register_side_effect(reg, meta)
             lines.append(
                 f"| {block} | {entry.get('base', '')} | {reg} | {meta.get('offset', '0x00')} | "
-                f"{meta.get('access', 'rw')} | {meta.get('width_bits', 32)} | {meta.get('reset', '0')} |"
+                f"{meta.get('access', 'rw')} | {write_policy} | {side_effect} | {meta.get('width_bits', 32)} | {meta.get('reset', '0')} |"
             )
     return lines
+
+def _register_write_policy(reg: str, meta: dict[str, Any]) -> str:
+    if str(meta.get("write_policy") or "").strip():
+        return str(meta.get("write_policy"))
+    if str(meta.get("clear") or "").upper() == "W1C" or str(meta.get("access") or "").lower() == "w1c":
+        return "w1c"
+    if str(meta.get("access") or "").lower() == "wo":
+        return "write_only"
+    if str(meta.get("access") or "").lower() == "ro":
+        return "read_only"
+    return "normal"
+
+def _register_side_effect(reg: str, meta: dict[str, Any]) -> str:
+    if reg == LOCK_REGISTER_NAME or str(meta.get("write_policy") or "").lower() == "set_only":
+        return "guards protected writes until reset"
+    if meta.get("lock_protected"):
+        return "blocked after lock until reset"
+    if str(meta.get("clear") or "").upper() == "W1C":
+        return "write 1 clears status bits"
+    if str(meta.get("access") or "").lower() == "ro":
+        return "read-only status/sample"
+    if str(meta.get("access") or "").lower() == "wo":
+        return "write-only command/data"
+    return str(meta.get("description") or "normal CSR behavior")
+
+def _all_register_rows(memory_map: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
+    rows: list[tuple[str, str, dict[str, Any]]] = []
+    for block, entry in memory_map.items():
+        if isinstance(entry, dict):
+            regs = entry.get("registers", {})
+            if isinstance(regs, dict):
+                rows.extend((block, reg, meta) for reg, meta in regs.items() if isinstance(meta, dict))
+    return rows
 
 
 def _mermaid_id(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]", "_", name).upper()
+
+def _mermaid_label(name: str) -> str:
+    if name == "interrupt_ctrl":
+        return "Interrupt Controller"
+    return name
+
+def _architecture_uses_interrupts(spec: dict[str, Any]) -> bool:
+    return "interrupt_ctrl" in [block.get("name") for block in spec.get("ip_blocks", []) if isinstance(block, dict)]
+
+def _interrupt_mermaid_class_lines(blocks: list[str]) -> list[str]:
+    if "interrupt_ctrl" not in blocks:
+        return []
+    return [
+        "  classDef interrupt fill:#ff4d5e,stroke:#ffb3bd,color:#111827,stroke-width:2px;",
+        "  class INTERRUPT_CTRL interrupt;",
+    ]

@@ -115,6 +115,28 @@ class TestAgent2RTLDesigner(unittest.TestCase):
         report = verify_rtl_files(spec, files)
         self.assertTrue(report["pass"], report["failures"])
 
+    def test_lock_register_intent_generates_set_only_and_guarded_writes(self):
+        spec = generate_architecture_spec(
+            "Design an APB4 GPIO watchdog subsystem. No CPU. "
+            "Watchdog lock prevents disable after lock and protects GPIO direction. "
+            "Formal-first SVA plus cocotb.",
+            "lock_subsystem",
+        )
+        files = generate_rtl_files(spec, debug=True)
+        by_name = {file["filename"]: file for file in files}
+
+        gpio = by_name["gpio.sv"]["content"]
+        timer = by_name["timer.sv"]["content"]
+        self.assertIn("logic [DATA_WIDTH-1:0] lock_q;", gpio)
+        self.assertIn("logic [DATA_WIDTH-1:0] lock_q;", timer)
+        self.assertIn("8'h18: lock_d = lock_q | pwdata_i;", gpio)
+        self.assertIn("8'h1C: lock_d = lock_q | pwdata_i;", timer)
+        self.assertIn("8'h08: direction_d = lock_q[0] ? direction_q : pwdata_i;", gpio)
+        self.assertIn("8'h00: ctrl_d = lock_q[0] ? ctrl_q : pwdata_i;", timer)
+
+        report = verify_rtl_files(spec, files)
+        self.assertTrue(report["pass"], report["failures"])
+
     def test_agent2_milestone_a_registry_contains_full_36_agent_swarm(self):
         registry = get_milestone_a_registry()
         ids = [agent.agent_id for agent in registry]

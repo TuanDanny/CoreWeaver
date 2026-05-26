@@ -6,13 +6,13 @@ const logStore = readFileSync(new URL("../src/logStore.ts", import.meta.url), "u
 const councilStore = readFileSync(new URL("../src/councilStore.ts", import.meta.url), "utf8");
 const api = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
 
-if (!html.includes("SWARM AI STUDIO V6.9")) {
-  throw new Error("Browser title must match V6.9 shell");
+if (!html.includes("SWARM AI STUDIO V7.3")) {
+  throw new Error("Browser title must match V7.3 shell");
 }
 for (const needle of ["getCurrentState", "new WebSocket", "Connected", "Reconnecting", "Disconnected", "root@swarm:~$", "Deep Planning"]) {
   if (!app.includes(needle)) throw new Error(`Missing UI contract: ${needle}`);
 }
-for (const needle of ["SWARM AI STUDIO V6.9", "Requirement command deck", "local AI hints", "mode-segment", "target://", "mission-button start", "mission-button stop"]) {
+for (const needle of ["SWARM AI STUDIO V7.3", "Requirement command deck", "local AI hints", "mode-segment", "target://", "mission-button start", "mission-button stop"]) {
   if (!app.includes(needle)) throw new Error(`Missing V6.7 launch UI contract: ${needle}`);
 }
 for (const needle of ["maxLength={2000}", "stageAttachments", "deleteStagedAttachment", "liveInputRun", "attachmentDraftId", "AttachmentRef", "Drop `.md`, `.pdf`, `.png`, `.jpg`, `.webp` here", "queued to Agent1 checkpoint"]) {
@@ -49,6 +49,9 @@ if (saveSettingsBlock.includes("JSON.stringify(payload)") || !saveSettingsBlock.
 if (app.includes('state.status === "done" ? "done" : "stopped"') || !app.includes('base.status === "failed"') || !app.includes("Number(event.returncode")) {
   throw new Error("process_exit reducer must preserve failed state and mark nonzero exits failed");
 }
+if (app.includes('event.event_type === "watchdog_timeout" || event.status === "failed"') || !app.includes("isTerminalRuntimeFailure")) {
+  throw new Error("runtime_event reducer must not promote internal expert failures to run failed");
+}
 for (const needle of ["base.status === \"paused\"", "closeRunningStages", "closeRunningAgents"]) {
   if (!app.includes(needle)) throw new Error(`Missing terminal state cleanup contract: ${needle}`);
 }
@@ -70,7 +73,7 @@ for (const needle of ["START failed", "STOP failed", "Approve failed", "SAVE FAI
 if (!app.includes("run.run_id && run.pause") || !app.includes("change: text")) {
   throw new Error("Console must treat plain text during pause as a change request");
 }
-for (const needle of ["canApprove", "Available only during PLAN_REVIEW", "Approve is disabled until Agent 1 creates an architecture plan."]) {
+for (const needle of ["canApprove", "Available only during PLAN_REVIEW or HUMAN_REVIEW", "Approve is available only during plan review or human RTL/Formal review."]) {
   if (!app.includes(needle)) throw new Error(`Missing clarification-safe approval UI: ${needle}`);
 }
 for (const needle of ["Agent 1 Deep Council", "Node Detail", "Inputs From Leaf Experts", "Show Conflicts Only", "Export Agent1 Debug Bundle", "Middle Modified/Merged"]) {
@@ -99,8 +102,29 @@ for (const forbidden of ["Job Queue", "Agents", "Logs", "Plan Review", "Artifact
 for (const needle of ["ProjectWorkspace", "PlanReviewWorkspace", "Open full screen plan", "SettingWorkspace", "AccountWorkspace", "AboutWorkspace"]) {
   if (!app.includes(needle)) throw new Error(`Missing V6.9 workspace contract: ${needle}`);
 }
-for (const needle of ["Operations Log", "Trace Debug", "Job Queue", "Agent 1 Council", "Node Detail", "Console", "Artifacts / Debug Bundle"]) {
+for (const needle of ["Why Blocked", "Requirement clarification required", "buildBlockedReasons", "Jump to Debug trace", "Open Raw Issues", "Open conflict artifact", "Open contract lint report", "plan_preview_not_approveable"]) {
+  if (!app.includes(needle)) throw new Error(`Missing V7.0 Project block diagnosis contract: ${needle}`);
+}
+for (const needle of ["Operations Log", "Signoff", "Raw Issues", "Flow Coverage", "Trace Debug", "Job Queue", "Agent 1 Council", "Node Detail", "Console", "Artifacts / Debug Bundle"]) {
   if (!app.includes(needle)) throw new Error(`Missing V6.9 debug workspace tab/content: ${needle}`);
+}
+for (const needle of ["SignoffDebugPanel", "Signoff Certificate / Gate Results / Benchmark", "Final Certificate", "Gate Results", "Benchmark Cases", "Waiver Results", "false-pass report", "oracle disagreements", "Artifact Refs"]) {
+  if (!app.includes(needle)) throw new Error(`Missing V7.2 Phase 8 signoff debug visibility contract: ${needle}`);
+}
+for (const needle of ["FlowCoveragePanel", "flow_coverage", "runtime_flow_coverage_report.json", "missing-span detector", "Segment health table", "open artifact/trace/issue actions"]) {
+  if (!app.includes(needle)) throw new Error(`Missing Phase 6B Flow Coverage UI contract: ${needle}`);
+}
+for (const needle of ["Cluster Council", "Agent1 Cluster Council", "Cluster Map", "Group Sessions", "Retry Tree", "Challenge Matrix", "Clarification Flow", "per-group token/cost/latency"]) {
+  if (!app.includes(needle)) throw new Error(`Missing V7.1 cluster council debug tracking UI: ${needle}`);
+}
+for (const needle of ["DebugIssue", "debugIssues", "RawIssuesPanel", "debug_issue", "Copy JSON", "Jump Node", "Open artifact", "setCode", "websocket_error", "plan_preview_failed", "attachment_delete_failed", "approve_blocked"]) {
+  if (!app.includes(needle)) throw new Error(`Missing V7.0 zero-loss debug issue contract: ${needle}`);
+}
+for (const needle of ["What To Check Next", "Raw Issues guide", "severity", "source", "code", "artifact_ref", "run_id/revision_id", "Active run:"]) {
+  if (!app.includes(needle)) throw new Error(`Missing V7.8 debug/mode self-guide contract: ${needle}`);
+}
+for (const needle of ["issueGroupId", "issueSpanId", "issueFlowSegment", "issueSourceLayer", "flow_segment", "source_layer", "run_id", "revision_id", "artifact_ref", "group {issueGroupId(issue)", "span {issueSpanId(issue)"]) {
+  if (!app.includes(needle)) throw new Error(`Missing V7.1 Raw Issues group/span filter contract: ${needle}`);
 }
 for (const needle of ["Agent Job Queue", "Create Agent 1 Plan Draft", "Create Agent 2 RTL Draft", "Export Debug Bundle", "Queue Full Swarm Run", "cancelAgentJob", "listJobs", "createAgentJob"]) {
   if (!app.includes(needle) && !api.includes(needle)) throw new Error(`Missing job queue UI/API contract: ${needle}`);

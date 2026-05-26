@@ -19,14 +19,14 @@ def _require_real_dv_tools():
     return report
 
 def _materialize_single_timer_project(tmp_path, fixture_name):
-    spec = generate_architecture_spec("SPI controller 50MHz", "spi_ctrl")
+    spec = generate_architecture_spec("Timer APB controller 50MHz", "timer_ctrl")
     rtl = generate_rtl_files(spec)
     dv = generate_dv_files(spec, rtl)
     rtl_dir = tmp_path / "rtl"
     tb_dir = tmp_path / "tb"
     rtl_dir.mkdir()
     tb_dir.mkdir()
-    fixture = (FIXTURE_DIR / fixture_name).read_text(encoding="ascii").replace("demo_timer_rtl", "spi_ctrl_timer_rtl")
+    fixture = (FIXTURE_DIR / fixture_name).read_text(encoding="ascii").replace("demo_timer_rtl", "timer_ctrl_timer_rtl")
     (rtl_dir / "timer.sv").write_text(fixture, encoding="ascii")
     for file in dv:
         (tb_dir / file["filename"]).write_text(file["content"], encoding="ascii")

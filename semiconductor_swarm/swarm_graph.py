@@ -15,6 +15,7 @@ from langgraph.types import Command, interrupt
 
 from semiconductor_swarm.agents.agent1_planning.agent1_subgraph import Agent1CodexUnavailable, run_agent1_hierarchical_planning
 from semiconductor_swarm.agents.agent1_planning.architect import generate_architecture_plan_markdown, generate_architecture_spec, requirement_needs_clarification, sanitize_project_name
+from semiconductor_swarm.agents.agent1_planning.signoff_engine import enforce_agent1_to_agent2_handoff, run_agent1_signoff_pipeline
 from semiconductor_swarm.agents.agent3_dv.dv_engineer import generate_dv_files, run_cocotb_sim, verify_dv_files, write_agent3_runtime_failure
 from semiconductor_swarm.agents.agent5_formal.formal_verifier import generate_formal_files, prove_formal_with_symbiyosys, verify_formal_files
 from semiconductor_swarm.agents.agent4_physical.physical_designer import compile_physical_design, decide_backend_action, generate_physical_design_files, verify_physical_design_files
@@ -30,6 +31,7 @@ from semiconductor_swarm.contracts.handoffs import (
 from semiconductor_swarm.contracts.envelope import ContractEnvelope
 from semiconductor_swarm.contracts.validators import build_agent1_to_agent2_contract, validate_agent1_to_agent2_contract
 from semiconductor_swarm.runtime_events import emit_runtime_event
+from semiconductor_swarm.tracing import trace_artifact_lineage, trace_debug_issue
 from semiconductor_swarm.tools.tool_detection import detect_real_tools
 
 
@@ -80,14 +82,23 @@ def agent1_architect_node(state: SwarmState) -> dict[str, Any]:
             _write_agent1_artifacts(working_state, result["agent1_artifacts"])
             clarification_path = _write_requirement_clarification(working_state, result.get("clarification_markdown", ""))
             intake_report = result.get("intake_report", {})
+            missing_fields = intake_report.get("missing_fields", [])
+            classification = str(intake_report.get("classification") or "")
+            explicit_action = str(intake_report.get("action_required") or "")
+            if explicit_action == "HITL_REQUIRED":
+                action_required = "HITL_REQUIRED"
+            elif classification == "NON_DESIGN_CONVERSATION":
+                action_required = "NON_DESIGN_CONVERSATION"
+            else:
+                action_required = "CONFLICT_REQUIRED" if any("conflict" in str(item).lower() for item in missing_fields) else "REQUIREMENT_CLARIFICATION"
             _log_status(working_state, "Planning", f"requirement clarification requested at {clarification_path}")
             payload = {
-                "action_required": "REQUIREMENT_CLARIFICATION",
+                "action_required": action_required,
                 "message": intake_report.get("user_response") or "Agent 1 needs a concrete chip requirement before architecture planning.",
                 "project_name": working_state.get("project_name", "swarm_soc"),
                 "plan_path": str(clarification_path),
                 "artifact_path": str(clarification_path),
-                "missing_fields": intake_report.get("missing_fields", []),
+                "missing_fields": missing_fields,
                 "brief_form": intake_report.get("brief_form", {}),
                 "classification": intake_report.get("classification"),
                 "consensus_score": intake_report.get("consensus_score"),
@@ -155,6 +166,36 @@ def _release_agent1_plan(state: SwarmState, requirement: str, result: dict[str, 
         "status": "PLANNING_READY",
     }
 
+def _interrupt_for_agent1_clarification(state: SwarmState, result: dict[str, Any]) -> str:
+    _write_agent1_artifacts(state, result["agent1_artifacts"])
+    clarification_path = _write_requirement_clarification(state, result.get("clarification_markdown", ""))
+    intake_report = result.get("intake_report", {})
+    missing_fields = intake_report.get("missing_fields", [])
+    classification = str(intake_report.get("classification") or "")
+    explicit_action = str(intake_report.get("action_required") or "")
+    if explicit_action == "HITL_REQUIRED":
+        action_required = "HITL_REQUIRED"
+    elif classification == "NON_DESIGN_CONVERSATION":
+        action_required = "NON_DESIGN_CONVERSATION"
+    else:
+        action_required = "CONFLICT_REQUIRED" if any("conflict" in str(item).lower() for item in missing_fields) else "REQUIREMENT_CLARIFICATION"
+    payload = {
+        "action_required": action_required,
+        "message": intake_report.get("user_response") or "Agent 1 needs clarification before releasing architecture.",
+        "project_name": state.get("project_name", "swarm_soc"),
+        "plan_path": str(clarification_path),
+        "artifact_path": str(clarification_path),
+        "missing_fields": missing_fields,
+        "brief_form": intake_report.get("brief_form", {}),
+        "classification": intake_report.get("classification"),
+        "consensus_score": intake_report.get("consensus_score"),
+        "calibrated_confidence": intake_report.get("calibrated_confidence"),
+        "policy_matrix": intake_report.get("policy_matrix", {}),
+        "resume_with": {"response": "resolve conflicts and regenerate plan"},
+    }
+    answer = interrupt(payload)
+    return answer.get("response", answer.get("notes", answer.get("change", ""))) if isinstance(answer, dict) else str(answer)
+
 def plan_review_node(state: SwarmState) -> dict[str, Any]:
     payload = {
         "action_required": "PLAN_REVIEW",
@@ -169,26 +210,66 @@ def plan_review_node(state: SwarmState) -> dict[str, Any]:
     if response.lower() != "ok":
         old_requirement = state["requirement"]
         new_requirement = f"{old_requirement}\nIncremental update: {response}"
-        result = _run_agent1_or_pause(state, new_requirement)
-        spec = result["spec"]
-        plan_markdown = result["plan_markdown"]
-        plan_path = _write_architecture_plan({**state, "requirement": new_requirement}, plan_markdown)
-        _write_agent1_artifacts({**state, "spec": spec}, result["agent1_artifacts"])
-        _log_status(state, "Planning", f"plan updated by engineer request: {response}")
-        return {
-            "requirement": new_requirement,
-            "spec": spec,
-            "plan_markdown": plan_markdown,
-            "plan_path": str(plan_path),
-            "agent1_artifacts": result["agent1_artifacts"],
-            "reports": {**state.get("reports", {}), "agent1": result["report"]},
-            "status": "PLANNING_READY",
-        }
+        working_state: SwarmState = {**state, "requirement": new_requirement, "plan_approved": False}
+        for _attempt in range(3):
+            result = _run_agent1_or_pause(working_state, new_requirement)
+            if result.get("requires_clarification"):
+                clarification = _interrupt_for_agent1_clarification(working_state, result).strip()
+                if not clarification:
+                    clarification = "User requested Agent 1 to resolve conflicts and regenerate the plan."
+                new_requirement = f"{new_requirement}\nConflict resolution: {clarification}".strip()
+                working_state = {**working_state, "requirement": new_requirement, "clarification_done": True}
+                continue
+            released = _release_agent1_plan(working_state, new_requirement, result)
+            _log_status(state, "Planning", f"plan updated by engineer request: {response}")
+            return {**released, "plan_approved": False}
+        raise RuntimeError("Agent 1 still has unresolved plan-review conflicts after 3 attempts; no Agent 2 handoff.")
     _log_status(state, "Planning", "plan approved")
-    return {"plan_approved": True, "status": "PLAN_APPROVED"}
+    approval_ref = _agent1_plan_approval_ref(state, response)
+    _ensure_agent1_signoff_run_manifest(state, approval_ref)
+    _clear_agent1_signoff_runtime_artifacts(state)
+    signoff = run_agent1_signoff_pipeline(_output_root(state), user_approval_ref=approval_ref)
+    if not signoff.handoff_allowed:
+        trace_debug_issue(
+            severity="error",
+            source="agent1.signoff",
+            code="AGENT1_SIGNOFF_BLOCKED_AFTER_PLAN_APPROVAL",
+            message="Agent 1 V7.2 signoff blocked plan approval handoff.",
+            details={"blocking_count": signoff.gate_report.blocking_count, "decision": signoff.certificate.decision},
+            run_id=signoff.evidence.run_id,
+            revision_id=signoff.evidence.revision_id,
+            artifact_ref=str(_output_root(state) / "reports" / "agent1" / "agent1_final_signoff_certificate.json"),
+            node_id="AGENT1.SIGNOFF.PLAN_REVIEW",
+            output_dir=_output_root(state),
+        )
+        raise RuntimeError("Agent 1 V7.2 signoff blocked Agent 2 handoff after plan approval.")
+    return {
+        "plan_approved": True,
+        "status": "PLAN_APPROVED",
+        "agent1_signoff_user_approval_ref": approval_ref,
+        "agent1_signoff_certificate": signoff.certificate.to_dict(),
+        "agent1_signoff_gate_report": signoff.gate_report.to_dict(),
+    }
 
 
 def agent2_rtl_node(state: SwarmState) -> dict[str, Any]:
+    approval_ref = str(state.get("agent1_signoff_user_approval_ref") or _agent1_plan_approval_ref(state, "ok"))
+    _ensure_agent1_signoff_run_manifest(state, approval_ref)
+    handoff = enforce_agent1_to_agent2_handoff(_output_root(state), user_approval_ref=approval_ref)
+    if not handoff.allowed:
+        trace_debug_issue(
+            severity="error",
+            source="agent2.handoff",
+            code="AGENT2_START_BLOCKED_BY_AGENT1_SIGNOFF",
+            message="Agent2 start blocked because Agent1 V7.2 signoff handoff is not allowed.",
+            details=handoff.to_dict(),
+            run_id=handoff.run_id,
+            revision_id=handoff.revision_id,
+            artifact_ref=handoff.certificate_ref,
+            node_id="AGENT2.RTL.HANDOFF_GATE",
+            output_dir=_output_root(state),
+        )
+        raise RuntimeError("Agent2 start blocked by Agent1 V7.2 signoff handoff gate.")
     _log_status(state, "RTL", "Agent 2 generating RTL")
     agent1_to_agent2 = _contract_payload(state, "agent1_to_agent2") or build_agent1_to_agent2_contract(state["spec"])
     if state.get("agent2_codex_required"):
@@ -209,7 +290,8 @@ def agent2_rtl_node(state: SwarmState) -> dict[str, Any]:
     envelopes = _with_contract_envelope(state, "agent2_to_agent3_contract", a23, "agent2", "agent3")
     envelopes = _with_contract_envelope({**state, "contract_envelopes": envelopes}, "agent2_to_agent4_contract", a24, "agent2", "agent4")
     envelopes = _with_contract_envelope({**state, "contract_envelopes": envelopes}, "agent2_to_agent5_contract", a25, "agent2", "agent5")
-    return {"agent1_to_agent2": agent1_to_agent2, "rtl_files": rtl_files, "agent2_to_agent3_contract": a23, "agent2_to_agent4_contract": a24, "agent2_to_agent5_contract": a25, "contract_envelopes": envelopes, "reports": reports, "agent2_fix_request": {}, "status": "AGENT2_RTL_DONE"}
+    rtl_artifact_paths = _persist_stage_artifacts(state, "rtl", rtl_files, agent="agent2", phase="rtl")
+    return {"agent1_to_agent2": agent1_to_agent2, "agent1_to_agent2_signoff_handoff": handoff.to_dict(), "rtl_files": rtl_files, "rtl_artifact_paths": rtl_artifact_paths, "agent2_to_agent3_contract": a23, "agent2_to_agent4_contract": a24, "agent2_to_agent5_contract": a25, "contract_envelopes": envelopes, "reports": reports, "agent2_fix_request": {}, "status": "AGENT2_RTL_DONE"}
 
 
 def rtl_lint_node(state: SwarmState) -> dict[str, Any]:
@@ -251,17 +333,24 @@ def agent5_formal_node(state: SwarmState) -> dict[str, Any]:
     status = "AGENT5_FORMAL_PASS" if pass_all else "AGENT5_FORMAL_FAIL"
     contract_report = {**report, "formal_targets": [block["name"] for block in state["spec"].get("ip_blocks", [])], "properties_generated": [file["filename"] for file in formal_files if file.get("filename", "").startswith("fv_")], "proof_results": reports.get("agent5_real", {}).get("runs", []), "counterexamples": reports.get("agent5_real", {}).get("failures", []), "engines": [report.get("formal_engine", "smtbmc z3")], "bounded_depth": int(report.get("formal_depth", 50)), "tool_availability": detect_real_tools() if state.get("run_real_tools") else {}, "commands": [["sby", "-f", file["filename"]] for file in formal_files if file.get("filename", "").endswith(".sby")]}
     result_contract = build_agent_result_contract("agent5_result/v1", state["spec"]["project_name"], "agent5", pass_all, formal_files, contract_report, report.get("failures", []))
-    return {"formal_files": formal_files, "agent5_result_contract": result_contract, "reports": reports, "status": status}
+    formal_artifact_paths = _persist_stage_artifacts(state, "formal", formal_files, agent="agent5", phase="formal")
+    return {"formal_files": formal_files, "formal_artifact_paths": formal_artifact_paths, "agent5_result_contract": result_contract, "reports": reports, "status": status}
 
 
 def human_review_node(state: SwarmState) -> dict[str, Any]:
     """Pause the graph until a human approves or rejects generated RTL/formal collateral."""
+    rtl_artifact_paths = _ensure_stage_artifacts(state, "rtl", state.get("rtl_files", []), agent="agent2", phase="rtl")
+    formal_artifact_paths = _ensure_stage_artifacts(state, "formal", state.get("formal_files", []), agent="agent5", phase="formal")
     payload = {
         "action_required": "HUMAN_REVIEW",
         "message": "Review Agent 2 RTL and Agent 5 formal files before simulation/physical design.",
         "project_name": state["spec"]["project_name"],
         "rtl_files": [file["filename"] for file in state.get("rtl_files", [])],
         "formal_files": [file["filename"] for file in state.get("formal_files", [])],
+        "rtl_artifact_dir": str(_output_root(state) / "rtl"),
+        "formal_artifact_dir": str(_output_root(state) / "formal"),
+        "rtl_artifact_paths": rtl_artifact_paths,
+        "formal_artifact_paths": formal_artifact_paths,
         "resume_with": {"approved": True, "reviewer": "your-name", "notes": "approved after code review"},
     }
     review = interrupt(payload)
@@ -513,9 +602,104 @@ def _write_stage_files(target: Path, files: list[dict[str, Any]]) -> None:
         filename = Path(file["filename"]).name
         (target / filename).write_text(file["content"], encoding="utf-8")
 
+def _persist_stage_artifacts(state: SwarmState | dict[str, Any], group: str, files: list[dict[str, Any]], *, agent: str, phase: str) -> list[str]:
+    out = _output_root(state)
+    written: list[str] = []
+    for file in files or []:
+        filename = Path(str(file.get("filename") or "")).name
+        if not filename:
+            continue
+        path = out / _stage_file_rel_path(group, file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = str(file.get("content") or "")
+        path.write_text(content, encoding="utf-8")
+        written.append(str(path))
+        emit_runtime_event({"type": "artifact", "agent": agent, "kind": path.suffix.lstrip(".") or group, "path": str(path), "bytes": path.stat().st_size})
+        trace_artifact_lineage(
+            str(path.relative_to(out)).replace("\\", "/"),
+            source_nodes=[f"{agent.upper()}.{phase.upper()}.WRITE"],
+            artifact_path=str(path),
+            kind=path.suffix.lstrip(".") or group,
+            phase=phase,
+            agent=agent,
+            output_dir=out,
+        )
+    if not written:
+        trace_debug_issue(
+            severity="error",
+            source=agent,
+            code=f"{group}_artifact_empty",
+            message=f"{agent} generated no {group} artifacts",
+            details={"group": group, "phase": phase},
+            output_dir=out,
+            node_id=f"{agent.upper()}.{phase.upper()}.WRITE",
+        )
+    return written
+
+def _ensure_stage_artifacts(state: SwarmState | dict[str, Any], group: str, files: list[dict[str, Any]], *, agent: str, phase: str) -> list[str]:
+    existing_key = f"{group}_artifact_paths"
+    existing = [str(path) for path in state.get(existing_key, []) if Path(str(path)).is_file()]
+    expected_count = len([file for file in files or [] if str(file.get("filename") or "").strip()])
+    if expected_count and len(existing) >= expected_count:
+        return existing
+    return _persist_stage_artifacts(state, group, files, agent=agent, phase=phase)
+
 
 def _output_root(state: SwarmState) -> Path:
     return Path(state.get("output_dir", "swarm_out"))
+
+def _agent1_plan_approval_ref(state: SwarmState | dict[str, Any], response: str) -> str:
+    seed = "|".join([
+        str(state.get("thread_id") or state.get("project_name") or "local"),
+        str(state.get("plan_path") or ""),
+        response,
+    ])
+    return f"plan-ok-{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:16]}"
+
+def _ensure_agent1_signoff_run_manifest(state: SwarmState | dict[str, Any], approval_ref: str) -> Path:
+    out = _output_root(state)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / "studio_run_manifest.json"
+    manifest: dict[str, Any] = {}
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                manifest = loaded
+        except json.JSONDecodeError:
+            manifest = {}
+    run_id = str(manifest.get("run_id") or state.get("thread_id") or state.get("project_name") or "local-run")
+    manifest.update(
+        {
+            "schema_version": "studio.run_manifest.v1",
+            "run_id": run_id,
+            "thread_id": str(manifest.get("thread_id") or state.get("thread_id") or run_id),
+            "project_name": str(state.get("project_name") or state.get("spec", {}).get("project_name", "swarm_soc")),
+            "output_dir": str(out),
+            "planning_mode": str(state.get("agent1_planning_mode") or state.get("planning_mode") or "normal"),
+            "user_approval_ref": approval_ref,
+            "agent1_signoff": {
+                "schema_version": "agent1_signoff_runtime_ref/v1",
+                "status": "pending",
+                "approval_ref": approval_ref,
+            },
+        }
+    )
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+def _clear_agent1_signoff_runtime_artifacts(state: SwarmState | dict[str, Any]) -> None:
+    agent1_dir = _output_root(state) / "reports" / "agent1"
+    for filename in (
+        "agent1_final_signoff_certificate.json",
+        "agent1_signoff_evidence_manifest.json",
+        "agent1_signoff_gate_report.json",
+        "agent1_signoff_runtime_manifest.json",
+        "agent1_to_agent2_signoff_handoff.json",
+    ):
+        path = agent1_dir / filename
+        if path.is_file():
+            path.unlink()
 
 
 def _write_architecture_plan(state: SwarmState, plan_markdown: str) -> Path:
@@ -523,6 +707,7 @@ def _write_architecture_plan(state: SwarmState, plan_markdown: str) -> Path:
     reports_dir.mkdir(parents=True, exist_ok=True)
     path = reports_dir / "architecture_plan.md"
     path.write_text(plan_markdown, encoding="utf-8")
+    emit_runtime_event({"type": "artifact", "agent": "agent1", "kind": "markdown", "path": str(path), "bytes": path.stat().st_size})
     return path
 
 
@@ -554,12 +739,27 @@ def _run_agent1_or_pause(state: SwarmState, requirement: str) -> dict[str, Any]:
         return _run_agent1_or_raise(state, requirement)
     except Agent1CodexUnavailable as exc:
         _log_status(state, "Planning", f"Agent 1 Codex unavailable: {exc}")
+        partial = _write_agent1_partial_outputs(state, requirement, str(exc))
+        trace_debug_issue(
+            severity="error",
+            source="agent1",
+            code="agent1_partial_plan_generated",
+            message="Agent 1 Codex failed before full architecture release; partial recovery artifacts were generated.",
+            details={"error": str(exc), "partial_plan": str(partial["plan_path"]), "checklist": str(partial["checklist_path"])},
+            artifact_ref=str(partial["plan_path"]),
+            node_id="AGENT1.CODEX_UNAVAILABLE",
+            output_dir=_output_root(state),
+        )
         payload = {
-            "action_required": "AGENT1_CODEX_UNAVAILABLE",
-            "message": "Agent 1 Codex API unavailable. Workflow paused before Agent 2; no deterministic fallback allowed.",
+            "action_required": "HITL_REQUIRED",
+            "message": "Agent 1 Codex API unavailable or timed out. Partial plan and recovery checklist were generated; Agent 2 handoff is blocked until Agent 1 is resumed successfully.",
             "endpoint": "http://localhost:20128/v1",
             "model": "cx/gpt-5.5",
             "error": str(exc),
+            "plan_path": str(partial["plan_path"]),
+            "artifact_path": str(partial["plan_path"]),
+            "partial_evidence_path": str(partial["evidence_path"]),
+            "recovery_checklist_path": str(partial["checklist_path"]),
             "resume_with": {"response": "retry after starting Codex endpoint"},
         }
         interrupt(payload)
@@ -569,6 +769,77 @@ def _run_agent1_or_pause(state: SwarmState, requirement: str) -> dict[str, Any]:
 def _run_agent1_or_raise(state: SwarmState, requirement: str) -> dict[str, Any]:
     return run_agent1_hierarchical_planning(requirement, state.get("project_name", "swarm_soc"), planning_mode=state.get("agent1_planning_mode"))
 
+
+def _write_agent1_partial_outputs(state: SwarmState, requirement: str, error: str) -> dict[str, Path]:
+    root = _output_root(state)
+    reports = root / "reports"
+    agent1 = reports / "agent1"
+    agent1.mkdir(parents=True, exist_ok=True)
+    reports.mkdir(parents=True, exist_ok=True)
+    project = sanitize_project_name(state.get("project_name", "swarm_soc"))
+    revision = hashlib.sha256(f"{project}\n{requirement}".encode("utf-8")).hexdigest()[:16]
+    partial_plan = "\n".join(
+        [
+            "# Architecture Plan (Partial)",
+            "",
+            f"Project: {project}",
+            f"Requirement revision: `{revision}`",
+            "",
+            "## Status",
+            "",
+            "- Agent 1 did not finish full council/signoff.",
+            "- Agent 2 handoff is blocked.",
+            "- This file is recovery evidence, not release approval.",
+            "",
+            "## Captured Requirement",
+            "",
+            "```text",
+            requirement.strip(),
+            "```",
+            "",
+            "## Known Failure",
+            "",
+            f"- {error}",
+            "",
+            "## Recovery",
+            "",
+            "- Verify Codex endpoint/model health.",
+            "- Resume Agent 1 after endpoint is healthy.",
+            "- Re-run full Agent 1 quality/signoff before approving Agent 2.",
+            "",
+        ]
+    )
+    evidence = {
+        "schema_version": "agent1.partial_evidence.v1",
+        "project_name": project,
+        "requirement_sha256": hashlib.sha256(requirement.encode("utf-8")).hexdigest(),
+        "revision_id": revision,
+        "status": "HITL_REQUIRED",
+        "handoff_allowed": False,
+        "error": error,
+        "generated_artifacts": ["architecture_plan.partial.md", "agent1_partial_evidence.json", "agent1_recovery_checklist.md"],
+    }
+    checklist = "\n".join(
+        [
+            "# Agent 1 Recovery Checklist",
+            "",
+            "- [ ] Codex endpoint returns healthy chat/completions response.",
+            "- [ ] Agent1 intake/council rerun completed without timeout.",
+            "- [ ] `architecture_plan.md` regenerated from current requirement.",
+            "- [ ] Agent1 quality report pass.",
+            "- [ ] Agent1 signoff certificate pass before Agent2 handoff.",
+            "",
+        ]
+    )
+    plan_path = reports / "architecture_plan.partial.md"
+    evidence_path = agent1 / "agent1_partial_evidence.json"
+    checklist_path = agent1 / "agent1_recovery_checklist.md"
+    plan_path.write_text(partial_plan, encoding="utf-8")
+    evidence_path.write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8")
+    checklist_path.write_text(checklist, encoding="utf-8")
+    for path in (plan_path, evidence_path, checklist_path):
+        emit_runtime_event({"type": "artifact", "agent": "agent1", "kind": path.suffix.lstrip(".") or "file", "path": str(path), "bytes": path.stat().st_size})
+    return {"plan_path": plan_path, "evidence_path": evidence_path, "checklist_path": checklist_path}
 
 def _log_status(state: SwarmState, phase: str, message: str) -> None:
     out = _output_root(state)

@@ -12,7 +12,7 @@ source_of_truth: true
 ## Read First
 - `AGENTS.md`
 - `ARCHITECTURE.md`
-- `PLANS.md`
+- `_private/plans/` when available locally
 - `docs/knowledge-map.yaml`
 
 ## Job

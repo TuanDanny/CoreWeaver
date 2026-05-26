@@ -21,7 +21,12 @@ from semiconductor_swarm.agents.agent1_planning.agent1_prompt import AGENT1_SYST
 from semiconductor_swarm.agents.agent1_planning.agent1_subgraph import (
     Agent1CodexUnavailable,
     V3_SUPER_COMMITTEE_NODES,
+    _artifact_consistency_report,
+    _firmware_driver_stub_artifact,
+    _firmware_header_artifact,
     _memory_interface_artifact,
+    _systemrdl_artifact,
+    _cocotb_reg_model_artifact,
     _repair_node,
     _router_node,
     _validate_safety_security_memory_map,
@@ -30,6 +35,7 @@ from semiconductor_swarm.agents.agent1_planning.agent1_subgraph import (
     route_validation_decision,
     run_agent1_hierarchical_planning,
 )
+from semiconductor_swarm.agents.agent1_planning.intake_council import run_agent1_intake_council
 from semiconductor_swarm.agents.agent1_planning.ai_expert_council import run_agent1_expert_council
 from semiconductor_swarm.agents.agent1_planning.capability_registry import assess_requirement_capability
 from semiconductor_swarm.agents.agent1_planning.audit_v4 import stable_hash, validate_audit_cross_checks
@@ -37,6 +43,7 @@ from semiconductor_swarm.agents.agent1_planning.proofs_v41 import build_v41_proo
 from semiconductor_swarm.agents.agent1_planning.replay_cli import verify_replay_bundle
 from semiconductor_swarm.agents.agent1_planning.spec_schema import attach_agent1_contract_manifest, attach_tool_provenance, validate_agent1_v37_spec_schema, validate_agent1_v4_spec_schema
 from semiconductor_swarm.tools.bandwidth_calculator import calculate_bandwidth
+from semiconductor_swarm.tools.contract_lint import lint_run_dir
 from semiconductor_swarm.tools.ppa_calculator import calculate_ppa
 
 
@@ -170,6 +177,188 @@ class TestAgent1Spec(unittest.TestCase):
         self.assertEqual(decoded["project_name"], "spi_ctrl")
         self.assertIn("apb_slave", decoded["interfaces"])
 
+    def test_uart_only_spec_does_not_over_generate_extra_blocks(self):
+        spec = generate_architecture_spec("UART APB controller 50MHz", "uart_only")
+        plan = generate_architecture_plan_markdown(spec)
+        blocks = {block["name"] for block in spec["ip_blocks"]}
+
+        self.assertEqual(blocks, {"uart"})
+        self.assertEqual(spec["requested_block_set"], ["uart"])
+        self.assertEqual(spec["allowed_derived_block_set"], [])
+        self.assertNotIn("timer", spec["memory_map"])
+        self.assertNotIn("control_regs", spec["memory_map"])
+        self.assertNotIn("interrupt_ctrl", spec["memory_map"])
+        self.assertIn("Block Minimality And Derived Blocks", plan)
+        report = build_plan_quality_report(spec, plan)
+        self.assertTrue(report["pass"], report["failures"])
+
+    def test_multi_peripheral_apb_spec_has_gpio_timer_register_contract_without_cpu(self):
+        requirement = (
+            "Design a release-ready APB multi-peripheral subsystem at 75MHz. "
+            "No CPU core. Use one external APB host, 32-bit data. "
+            "Include UART, SPI, I2C, 32-bit GPIO with direction/data/interrupt registers, "
+            "and timer/watchdog with timeout IRQ. Do not invent extra CPU, DMA, cache, or interrupt controller."
+        )
+        spec = generate_architecture_spec(requirement, "apb_multi_periph")
+        plan = generate_architecture_plan_markdown(spec)
+        blocks = {block["name"] for block in spec["ip_blocks"]}
+
+        self.assertFalse(spec["requirements"]["cpu_requested"])
+        self.assertFalse(spec["cpu_subsystem"]["synthesized_cpu"])
+        self.assertEqual(spec["bus_topology"]["masters"], ["external_apb_host"])
+        self.assertEqual(blocks, {"uart", "spi", "i2c", "gpio", "timer"})
+        self.assertNotIn("interrupt_ctrl", spec["memory_map"])
+        self.assertGreaterEqual(set(spec["memory_map"]["gpio"]["registers"]), {"data_in", "data_out", "direction", "irq_type", "irq_status", "irq_enable"})
+        self.assertGreaterEqual(set(spec["memory_map"]["timer"]["registers"]), {"ctrl", "load", "value", "prescale", "watchdog", "irq_status", "irq_enable"})
+        self.assertIn("GPIO External Peripheral", plan)
+        self.assertIn("Timer/Watchdog External Peripheral", plan)
+        report = build_plan_quality_report(spec, plan)
+        self.assertTrue(report["pass"], report["failures"])
+
+    def test_apb4_requirement_ignores_negated_axi_ahb_terms(self):
+        requirement = (
+            "Design a release-ready APB4 peripheral subsystem. "
+            "One APB4 slave top with UART, SPI, I2C, GPIO, and watchdog timer. "
+            "Do not invent AXI/AHB/CPU/security blocks."
+        )
+        spec = generate_architecture_spec(requirement, "apb4_periph")
+        plan = generate_architecture_plan_markdown(spec)
+        report = build_plan_quality_report(spec, plan)
+
+        self.assertEqual(spec["requirements"]["extracted_intents"]["requested_bus_protocol"], "APB")
+        self.assertEqual(spec["bus_architecture"]["primary_protocol"], "APB")
+        self.assertTrue(report["pass"], report["failures"])
+
+    def test_watchdog_without_timer_word_maps_to_timer_contract(self):
+        requirement = (
+            "Design an APB4 UART/GPIO/watchdog subsystem. "
+            "No CPU, no DMA. Watchdog lock prevents disable after lock and protects GPIO direction. "
+            "Formal-first SVA plus cocotb."
+        )
+        spec = generate_architecture_spec(requirement, "watchdog_subsystem")
+        plan = generate_architecture_plan_markdown(spec)
+        report = build_plan_quality_report(spec, plan)
+
+        self.assertIn("timer", {block["name"] for block in spec["ip_blocks"]})
+        self.assertGreaterEqual(set(spec["memory_map"]["timer"]["registers"]), {"ctrl", "load", "value", "prescale", "watchdog", "irq_status", "irq_enable"})
+        self.assertIn("lock", spec["memory_map"]["timer"]["registers"])
+        self.assertIn("lock", spec["memory_map"]["gpio"]["registers"])
+        self.assertTrue(spec["memory_map"]["timer"]["registers"]["ctrl"]["lock_protected"])
+        self.assertTrue(spec["memory_map"]["gpio"]["registers"]["direction"]["lock_protected"])
+        self.assertIn("Timer/Watchdog External Peripheral", plan)
+        self.assertIn("set-only", plan)
+        self.assertTrue(report["pass"], report["failures"])
+
+    def test_intake_tolerates_single_expert_codex_failure(self):
+        requirement = "Design RV32IMC SoC with APB UART at 100MHz"
+
+        def valid_payload() -> str:
+            return json.dumps(
+                {
+                    "classification": "DESIGN_READY",
+                    "normalized_requirement": requirement,
+                    "canonical_intent": {
+                        "purpose": "RV32IMC microcontroller SoC",
+                        "cpu": "RV32IMC",
+                        "bus": "APB",
+                        "peripheral": ["UART"],
+                        "clock": "100MHz",
+                    },
+                    "extracted_intent": {"cpu": "RV32IMC", "bus": "APB", "peripheral": ["UART"]},
+                    "missing_fields": [],
+                    "user_response": "Ready for architecture planning.",
+                    "brief_form": {
+                        "chip_purpose": "RV32IMC microcontroller SoC",
+                        "bus_protocol": "APB",
+                        "cpu_ip_peripheral": "RV32IMC UART",
+                        "clock": "100MHz",
+                        "power": "",
+                        "target_flow": "formal-first",
+                    },
+                    "citations": [
+                        {"source": "raw_requirement", "field": "purpose", "text": "Design RV32IMC SoC"},
+                        {"source": "raw_requirement", "field": "cpu", "text": "RV32IMC"},
+                        {"source": "raw_requirement", "field": "bus", "text": "APB"},
+                        {"source": "raw_requirement", "field": "peripheral", "text": "UART"},
+                    ],
+                    "conflicts": [],
+                    "contradictions": [],
+                    "confidence": 0.92,
+                }
+            )
+
+        def codex_call(prompt: str):
+            if "UserBriefExpert" in prompt:
+                raise TimeoutError("mock timeout")
+            return Agent1CodexResult(valid_payload(), {"model": "mock", "total_tokens": 1})
+
+        report = run_agent1_intake_council(requirement, "rv32_intake", codex_call)
+
+        self.assertTrue(report["ready_for_council"])
+        self.assertEqual(report["classification"], "DESIGN_READY")
+        self.assertIn("A1.00-BRIEF", report["policy_matrix"]["policies"][0]["evidence"]["failed_nodes"])
+
+    def test_intake_fast_routes_apb4_peripheral_without_negated_ahb(self):
+        requirement = (
+            "Design a release-ready APB4 peripheral subsystem for FPGA and ASIC reuse. "
+            "One locked APB4 slave top. No CPU, no DMA, no cache, no AXI/AHB. "
+            "Peripherals: UART, SPI master, I2C master, 32-bit GPIO, watchdog/timer. "
+            "100MHz target, formal-first SVA, cocotb regression, RDL/C header/DV register model, safety-zero signoff."
+        )
+
+        def forbidden_codex(_prompt):
+            raise AssertionError("simple APB4 peripheral should not call Codex intake")
+
+        report = run_agent1_intake_council(requirement, "apb4_peripheral", forbidden_codex)
+
+        self.assertTrue(report["ready_for_council"])
+        self.assertEqual(report["classification"], "DESIGN_READY")
+        self.assertEqual(report["codex_call_count"], 0)
+        self.assertEqual(report["canonical_intent"]["bus"]["protocol"], "APB")
+        self.assertIsNone(report["canonical_intent"]["cpu"])
+
+    def test_intake_detailed_rv32imc_soc_rescues_overclarifying_model(self):
+        requirement = (
+            "Design a release-ready RV32IMC microcontroller SoC for FPGA bring-up and ASIC reuse. "
+            "CPU: 32-bit RV32IMC, 3-stage in-order pipeline. "
+            "Memory: 16KB boot ROM at 0x00000000, 64KB SRAM at 0x20000000, APB peripheral window at 0x40000000. "
+            "No cache, no DMA. Bus: CPU instruction/data access to local ROM/SRAM and APB4 peripherals. "
+            "Peripherals: UART, SPI master, I2C master, GPIO, watchdog timer. "
+            "100MHz target. Verification: formal-first SVA, cocotb regressions, RDL/header/DV consistency, G00-G12 signoff."
+        )
+        payload = {
+            "classification": "DESIGN_NEEDS_CLARIFICATION",
+            "normalized_requirement": requirement,
+            "canonical_intent": {
+                "purpose": "RV32IMC microcontroller SoC",
+                "cpu": "32-bit RV32IMC",
+                "bus": "APB4",
+                "peripheral": ["UART", "SPI", "I2C", "GPIO", "watchdog timer"],
+                "memory": {"rom": "16KB", "sram": "64KB", "apb_window": "0x40000000"},
+                "clock": "100MHz",
+                "verification_scope": ["formal-first SVA", "cocotb", "G00-G12 signoff"],
+            },
+            "extracted_intent": {},
+            "missing_fields": ["exact trap vector", "exact UART FIFO depth", "exact APB PSLVERR behavior"],
+            "user_response": "Need more detail before release.",
+            "brief_form": {},
+            "citations": [{"source": "raw_requirement", "field": "cpu", "text": "CPU: 32-bit RV32IMC"}],
+            "conflicts": [],
+            "contradictions": [],
+            "confidence": 0.7,
+        }
+
+        def codex_call(_prompt):
+            return Agent1CodexResult(json.dumps(payload), {"model": "mock", "total_tokens": 1})
+
+        report = run_agent1_intake_council(requirement, "rv32_soc", codex_call)
+
+        self.assertTrue(report["ready_for_council"])
+        self.assertEqual(report["classification"], "DESIGN_READY")
+        self.assertEqual(report["missing_fields"], [])
+        self.assertEqual(report["canonical_intent"]["bus"]["protocol"], "APB")
+        self.assertEqual(report["canonical_intent"]["cpu"]["width_bits"], 32)
+
     def test_architecture_plan_contains_hitl_sections(self):
         spec = generate_architecture_spec("I2C controller 50MHz", "i2c_ctrl")
         plan = generate_architecture_plan_markdown(spec)
@@ -182,6 +371,27 @@ class TestAgent1Spec(unittest.TestCase):
         self.assertIn("## Interfaces", plan)
         self.assertIn("## Timeline", plan)
         self.assertIn("APB slave pinout is locked", plan)
+        self.assertIn("## Executive Decision Ledger", plan)
+        self.assertIn("## Requirement Coverage", plan)
+        self.assertIn("## Interface Contract", plan)
+        self.assertIn("## Verification Plan", plan)
+        self.assertIn("## Signoff Evidence Expected", plan)
+        self.assertNotIn("Expert calls: 0", plan)
+
+    def test_v78_register_table_shows_write_policy_set_only(self):
+        requirement = (
+            "Design an APB4 GPIO watchdog subsystem. No CPU. "
+            "Lock prevents GPIO direction and watchdog ctrl writes after lock. "
+            "Formal-first SVA plus cocotb."
+        )
+        spec = generate_architecture_spec(requirement, "lock_policy")
+        plan = generate_architecture_plan_markdown(spec)
+
+        self.assertIn("| Write Policy |", plan)
+        self.assertIn("| gpio |", plan)
+        self.assertIn("| lock |", plan)
+        self.assertIn("| set_only |", plan)
+        self.assertIn("guards protected writes until reset", plan)
 
     def test_cpu32_apb_uart_spec_captures_requirement(self):
         requirement = "Generate a 32-bit CPU architecture using an APB bus, with UART as the external peripheral"
@@ -265,6 +475,70 @@ class TestAgent1Spec(unittest.TestCase):
 
         report = build_plan_quality_report(spec, plan)
         self.assertTrue(report["pass"], report["failures"])
+
+    def test_i2c_temperature_sensor_contract_syncs_plan_rdl_firmware_and_dv(self):
+        requirement = "Generate an APB I2C temperature sensor controller with high_threshold and low_threshold interrupt thresholds"
+        spec = generate_architecture_spec(requirement, "i2ctempsensoruat")
+        plan = generate_architecture_plan_markdown(spec)
+        rdl = _systemrdl_artifact(spec)
+        header = _firmware_header_artifact(spec)
+        driver = _firmware_driver_stub_artifact(spec)
+        model = _cocotb_reg_model_artifact(spec)
+        artifacts = {
+            "architecture_plan.md": plan,
+            "agent1_register_map.rdl": rdl,
+            "fw_i2ctempsensoruat_regs.h": header,
+            "fw_i2ctempsensoruat_driver_stub.c": driver,
+            "tb_i2ctempsensoruat_reg_model.py": model,
+        }
+        regs = spec["memory_map"]["i2c"]["registers"]
+
+        for reg in ("temperature_data", "high_threshold", "low_threshold", "irq_status", "irq_enable"):
+            self.assertIn(reg, regs)
+            self.assertIn(reg, plan)
+            self.assertIn(f"reg {reg}", rdl)
+            self.assertIn(f"I2CTEMPSENSORUAT_I2C_{reg.upper()}_OFFSET", header)
+            self.assertIn(f"self.i2c_{reg} = Register", model)
+        self.assertEqual(regs["irq_status"]["offset"], "0x18")
+        self.assertIn("void init_i2c_sensor(void);", header)
+        self.assertIn("void clear_temp_interrupt(uintptr_t block_base, uint32_t mask);", header)
+        self.assertIn("void init_i2c_sensor(void)", driver)
+        self.assertIn("void clear_temp_interrupt(uintptr_t block_base, uint32_t mask)", driver)
+        self.assertIn("I2CTEMPSENSORUAT_I2C_IRQ_STATUS_OFFSET", driver)
+        self.assertNotIn("block_base + 0x14u", driver)
+        self.assertIn("Interrupt Controller", plan)
+        self.assertIn("classDef interrupt", plan)
+        self.assertIn("class INTERRUPT_CTRL interrupt", plan)
+        consistency = _artifact_consistency_report(spec, plan, artifacts)
+        self.assertTrue(consistency["pass"], consistency["issues"])
+
+    def test_contract_lint_reports_synced_i2c_temperature_output(self):
+        requirement = "Generate an APB I2C temperature sensor controller with high_threshold and low_threshold interrupt thresholds"
+        spec = generate_architecture_spec(requirement, "i2ctempsensoruat")
+        plan = generate_architecture_plan_markdown(spec)
+        root = Path(self._testMethodName)
+        if root.exists():
+            import shutil
+            shutil.rmtree(root)
+        try:
+            agent1 = root / "reports" / "agent1"
+            agent1.mkdir(parents=True)
+            (root / "reports" / "architecture_plan.md").write_text(plan, encoding="utf-8")
+            (agent1 / "agent1_final_architecture_spec.json").write_text(json.dumps(spec, indent=2), encoding="utf-8")
+            (agent1 / "agent1_register_map.rdl").write_text(_systemrdl_artifact(spec), encoding="utf-8")
+            (agent1 / "fw_i2ctempsensoruat_regs.h").write_text(_firmware_header_artifact(spec), encoding="utf-8")
+            (agent1 / "fw_i2ctempsensoruat_driver_stub.c").write_text(_firmware_driver_stub_artifact(spec), encoding="utf-8")
+            (agent1 / "tb_i2ctempsensoruat_reg_model.py").write_text(_cocotb_reg_model_artifact(spec), encoding="utf-8")
+            (agent1 / "agent1_artifact_fingerprint_manifest.json").write_text(json.dumps({"revision_id": "r1", "artifacts": [{"artifact": "architecture_plan.md", "status": "current"}]}), encoding="utf-8")
+
+            report = lint_run_dir(root)
+
+            self.assertTrue(report["pass"], report["issues"])
+            self.assertTrue((root / "reports" / "contract_lint_report.json").exists())
+        finally:
+            if root.exists():
+                import shutil
+                shutil.rmtree(root)
 
     def test_plan_quality_gate_rejects_missing_i2c_for_i2c_requirement(self):
         requirement = "Generate a 32-bit CPU architecture using an APB bus, with UART and I2C as the external peripherals"
@@ -426,7 +700,7 @@ class TestAgent1Spec(unittest.TestCase):
         self.assertIn("agent1_expert_council_trace.jsonl", result["agent1_artifacts"])
         self.assertIn("agent1_capability_assessment.json", result["agent1_artifacts"])
         self.assertIn("agent1_requirement_consistency_report.json", result["agent1_artifacts"])
-        self.assertGreaterEqual(mock_codex.call_count, 46)
+        self.assertGreaterEqual(mock_codex.call_count, 15)
         self.assertIn("fw_edge_cam_regs.h", result["agent1_artifacts"])
         self.assertIn("fw_edge_cam_driver_stub.c", result["agent1_artifacts"])
         self.assertIn("tb_edge_cam_reg_model.py", result["agent1_artifacts"])
