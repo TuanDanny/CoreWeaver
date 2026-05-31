@@ -26,10 +26,12 @@ This file maps the current public repo shape for future AI/Codex sessions.
 - `src/coreweaver/runtime/session.py`: profile dispatch into skeleton or Agent1 swarm runtime.
 - `src/coreweaver/agents/agent1/runtime.py`: Agent1 true swarm flow.
 - `src/coreweaver/agents/agent1/signoff.py`: deterministic G00-G12 signoff.
+- `src/coreweaver/agents/agent1/evidence_report.py`: post-run Agent1 evidence report generator that reads trace, replay, signoff, handoff, and artifact references.
 - `src/coreweaver/contracts/agent1_handoff.py`: consumer-side Agent1-to-Agent2 handoff validator.
 - `studio/backend/agent_service.py`: Studio job service and Agent2 draft gate.
 - `scripts/harness_check.py`: deterministic harness/rule/secret check.
 - `scripts/run_benchmarks.py`: public benchmark runner.
+- `scripts/generate_agent1_evidence_report.py`: CLI for generating an Agent1 evidence report from a run directory.
 - `scripts/start_codex_task.ps1` and `scripts/finish_codex_task.ps1`: branch, check, commit, push, and PR workflow.
 
 ## Runtime, Data, And Control Flow
@@ -41,6 +43,7 @@ This file maps the current public repo shape for future AI/Codex sessions.
 - `mock_swarm` uses deterministic mock model behavior through `ModelRouter`.
 - `local_llm` uses an OpenAI-compatible client through `ModelRouter`; live endpoint credentials remain optional.
 - Agent1 artifacts are written under output directories such as `reports/`, `contracts/`, `trace/`, `replay/`, `blackboard/`, and `checkpoints/`.
+- Agent1 evidence reports are written under `artifacts/agent1_evidence_report.json` with artifact reference checks in `artifacts/agent1_artifact_index.json`.
 - Studio maps core events into UI/runtime tracking events and blocks Agent2 draft jobs unless handoff validation passes.
 
 ## Test Coverage Map
@@ -49,6 +52,7 @@ This file maps the current public repo shape for future AI/Codex sessions.
 - Public API, runtime profiles, and Studio adapter: `tests/test_core_skeleton.py`, `tests/test_contracts_and_profiles.py`, `tests/test_studio_core_adapter.py`.
 - Agent1 true swarm happy and negative flows: `tests/test_agent1_true_swarm.py`.
 - Strict-done signoff, safety, handoff, local LLM fake client, and replay hardening: `tests/test_strict_done_hardening.py`.
+- Agent1 evidence report generation and negative artifact validation: `tests/test_agent1_evidence_report.py`.
 - Benchmark runner and cases: `tests/test_benchmark_skeleton.py`, `scripts/run_benchmarks.py`, `benchmarks/cases/`.
 - Package/source layout: `tests/test_packaging_rule.py`.
 - Harness knowledge and observability evals: `tests/test_harness_knowledge_observability_eval.py`.

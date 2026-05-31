@@ -73,6 +73,7 @@ Read it before changing code, then continue with the required files listed in
 - Runtime session: `src/coreweaver/runtime/session.py`
 - Agent1 runtime: `src/coreweaver/agents/agent1/runtime.py`
 - Agent1 verifier/signoff/handoff: `src/coreweaver/agents/agent1/verifier.py`, `src/coreweaver/agents/agent1/signoff.py`, `src/coreweaver/agents/agent1/handoff.py`, `src/coreweaver/contracts/agent1_handoff.py`
+- Agent1 evidence report: `src/coreweaver/agents/agent1/evidence_report.py`, `scripts/generate_agent1_evidence_report.py`
 - Studio boundary: `studio/backend/agent_service.py`, `src/coreweaver/studio_runner.py`, `src/coreweaver/studio_adapter.py`
 - Harness gates: `scripts/harness_check.py`, `.rules/`
 - Benchmarks: `scripts/run_benchmarks.py`, `benchmarks/cases/`

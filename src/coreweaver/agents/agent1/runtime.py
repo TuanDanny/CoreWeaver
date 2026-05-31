@@ -68,7 +68,7 @@ class Agent1SwarmRuntime:
         if pack.classification == RequirementClassification.NON_DESIGN_CONVERSATION:
             await self._emit_pause(run_id, revision_id, "NON_DESIGN_CONVERSATION", "This looks like non-design conversation; Agent1 swarm did not run.")
             self._write_checkpoint(output_dir, "pause_non_design", run_id, revision_id, {"action_required": "NON_DESIGN_CONVERSATION"})
-            self._write_event_trace(output_dir)
+            self._write_runtime_debug_artifacts(output_dir, run_id=run_id)
             return Agent1SwarmResult(status="paused", action_required="NON_DESIGN_CONVERSATION")
         if pack.classification == RequirementClassification.AMBIGUOUS_CHIP_IDEA:
             question = build_clarification(pack)
@@ -90,7 +90,7 @@ class Agent1SwarmRuntime:
             )
             await self._emit_pause(run_id, revision_id, "REQUIREMENT_CLARIFICATION", question.question, {"missing_fields": question.missing_fields})
             self._write_checkpoint(output_dir, "clarification", run_id, revision_id, question.model_dump(mode="json"))
-            self._write_event_trace(output_dir)
+            self._write_runtime_debug_artifacts(output_dir, run_id=run_id)
             return Agent1SwarmResult(status="paused", action_required="REQUIREMENT_CLARIFICATION")
         await self._emit(CoreEventType.INTAKE_DONE, run_id, revision_id, "agent1:intake:done", "agent1:intake:start", {"requirement_id": pack.requirement_id})
         await self._emit(
@@ -105,7 +105,7 @@ class Agent1SwarmRuntime:
         if safety_action is not None:
             await self._emit_pause(run_id, revision_id, safety_action, "Agent1 safety preflight blocked execution.")
             self._write_checkpoint(output_dir, f"safety_{safety_action.lower()}", run_id, revision_id, {"action_required": safety_action})
-            self._write_event_trace(output_dir)
+            self._write_runtime_debug_artifacts(output_dir, run_id=run_id)
             return Agent1SwarmResult(status="paused", action_required=safety_action)
 
         board = Blackboard(run_id)
@@ -136,7 +136,7 @@ class Agent1SwarmRuntime:
             await self._emit_debug_issue(run_id, revision_id, "agent1.safety", "canary_touched", "Canary token appeared in model-visible output.", parent_span_id="agent1:canary:decomposition")
             await self._emit_pause(run_id, revision_id, "HITL_REQUIRED", "Canary quarantine blocks Agent1 handoff.")
             self._write_checkpoint(output_dir, "canary_quarantine", run_id, revision_id, {"canary_id": canary.token_id})
-            self._write_event_trace(output_dir)
+            self._write_runtime_debug_artifacts(output_dir, board)
             return Agent1SwarmResult(status="paused", action_required="HITL_REQUIRED")
         self._write_checkpoint(output_dir, "cluster_assignment", run_id, revision_id, {"assignment_count": len(assignments), "topology_hash": stable_hash(topology.model_dump(mode="json"))})
 
@@ -378,15 +378,16 @@ class Agent1SwarmRuntime:
         events = [event.safe_dump() for event in self.event_stream.history]
         (trace_dir / "events.jsonl").write_text("\n".join(json.dumps(event, sort_keys=True) for event in events) + "\n", encoding="utf-8")
 
-    def _write_runtime_debug_artifacts(self, output_dir: Path, board: Blackboard) -> None:
+    def _write_runtime_debug_artifacts(self, output_dir: Path, board: Blackboard | None = None, *, run_id: str | None = None) -> None:
         replay_dir = output_dir / "replay"
         blackboard_dir = output_dir / "blackboard"
         replay_dir.mkdir(parents=True, exist_ok=True)
-        blackboard_dir.mkdir(parents=True, exist_ok=True)
         self._write_event_trace(output_dir)
         events = [event.safe_dump() for event in self.event_stream.history]
-        snapshot = board.snapshot().safe_dump()
-        self._write_json(blackboard_dir / "snapshot.json", snapshot)
+        snapshot = board.snapshot().safe_dump() if board is not None else None
+        if snapshot is not None:
+            blackboard_dir.mkdir(parents=True, exist_ok=True)
+            self._write_json(blackboard_dir / "snapshot.json", snapshot)
         checkpoints = []
         checkpoint_dir = output_dir / "checkpoints"
         if checkpoint_dir.exists():
@@ -396,7 +397,7 @@ class Agent1SwarmRuntime:
         handoff_path = output_dir / "contracts" / "agent1_to_agent2.json"
         bundle = {
             "schema_version": "coreweaver.agent1.replay.v1",
-            "run_id": board.run_id,
+            "run_id": board.run_id if board is not None else run_id,
             "events": events,
             "blackboard_snapshot": snapshot,
             "checkpoints": checkpoints,

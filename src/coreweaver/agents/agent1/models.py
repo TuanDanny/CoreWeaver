@@ -182,7 +182,10 @@ class Agent1ToAgent2Handoff(StrictCoreModel):
     architecture_plan_ref: str
     signoff_certificate_ref: str
     locked_interfaces: tuple[str, ...]
+    locked_memory_map: tuple[str, ...]
     locked_registers: tuple[RegisterEntry, ...]
+    locked_reset_clock_cdc: tuple[str, ...]
+    signoff_gate_results: dict[str, str]
     blockers: tuple[str, ...] = ()
     trace_refs: tuple[str, ...] = ()
 
