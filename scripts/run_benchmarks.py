@@ -12,6 +12,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from coreweaver.runtime import RuntimeSession, RuntimeState
+from coreweaver.agents.agent1.evidence_report import generate_agent1_evidence_report
 
 
 async def _run_case(case: dict[str, object], output_root: Path) -> dict[str, object]:
@@ -39,6 +40,7 @@ async def _run_case(case: dict[str, object], output_root: Path) -> dict[str, obj
     missing_topics = tuple(topic for topic in expected_topics if topic.lower() not in combined)
     status_ok = result.action_required == expected_status or expected_status.lower() in combined
     passed = status_ok and not missing_topics
+    evidence_report = generate_agent1_evidence_report(output_dir, profile="mock_swarm", benchmark_case=case)
     return {
         "case_id": case_id,
         "passed": passed,
@@ -46,6 +48,10 @@ async def _run_case(case: dict[str, object], output_root: Path) -> dict[str, obj
         "status_ok": status_ok,
         "missing_topics": missing_topics,
         "artifact": str(plan_path).replace("\\", "/") if plan_path.exists() else "",
+        "evidence_report": evidence_report.artifacts.report_path,
+        "evidence_verdict": evidence_report.verdict,
+        "debug_completeness_score": evidence_report.debug_completeness_score,
+        "readiness_score": evidence_report.readiness_score,
     }
 
 
