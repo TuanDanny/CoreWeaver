@@ -31,6 +31,7 @@ def main() -> int:
     else:
         print(payload["verdict"])
         print(payload["artifacts"]["report_path"])
+        print(payload["artifacts"]["markdown_report_path"])
     return 0 if report.verdict == "ready" else 1
 
 

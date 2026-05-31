@@ -20,3 +20,5 @@ def test_benchmark_runner_cases_pass() -> None:
     assert report["passed"] is True
     assert report["case_count"] >= 10
     assert report["message"] == "benchmark cases executed"
+    first_result = report["results"][0]
+    assert first_result["evidence_markdown_report"].endswith("artifacts/agent1_evidence_report.md")

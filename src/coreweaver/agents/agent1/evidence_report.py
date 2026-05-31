@@ -22,6 +22,7 @@ class EvidenceArtifacts(StrictCoreModel):
     handoff_path: str
     artifact_index_path: str
     report_path: str
+    markdown_report_path: str
 
 
 class GateEvidence(StrictCoreModel):
@@ -90,6 +91,7 @@ def generate_agent1_evidence_report(
     handoff_path = run_path / "contracts" / "agent1_to_agent2.json"
     artifact_index_path = run_path / "artifacts" / "agent1_artifact_index.json"
     report_path = run_path / "artifacts" / "agent1_evidence_report.json"
+    markdown_report_path = run_path / "artifacts" / "agent1_evidence_report.md"
 
     blockers: list[str] = []
     warnings: list[str] = []
@@ -146,6 +148,7 @@ def generate_agent1_evidence_report(
             handoff_path=_display_path(handoff_path),
             artifact_index_path=_display_path(artifact_index_path),
             report_path=_display_path(report_path),
+            markdown_report_path=_display_path(markdown_report_path),
         ),
         gates=gates,
         verifier_findings=verifier_findings,
@@ -162,7 +165,79 @@ def generate_agent1_evidence_report(
     if write:
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True), encoding="utf-8")
+        markdown_report_path.write_text(render_agent1_evidence_markdown(report), encoding="utf-8")
     return report
+
+
+def render_agent1_evidence_markdown(report: Agent1EvidenceReport) -> str:
+    lines = [
+        "# Agent1 Evidence Report",
+        "",
+        "## Summary",
+        f"- Verdict: `{report.verdict}`",
+        f"- Run ID: `{report.run_id}`",
+        f"- Revision ID: `{report.revision_id}`",
+        f"- Profile: `{report.profile}`",
+        f"- Benchmark case: `{report.benchmark_case_id or 'none'}`",
+        f"- Mutation tags: `{', '.join(report.mutation_tags) if report.mutation_tags else 'none'}`",
+        f"- Terminal status: `{report.terminal_status}`",
+        f"- Readiness score: `{report.readiness_score}`",
+        f"- Debug completeness score: `{report.debug_completeness_score}`",
+        "",
+        "## Artifacts",
+        f"- Trace: [{report.artifacts.trace_path}]({report.artifacts.trace_path})",
+        f"- Replay bundle: [{report.artifacts.replay_path}]({report.artifacts.replay_path})",
+        f"- Signoff certificate: [{report.artifacts.signoff_path}]({report.artifacts.signoff_path})",
+        f"- Handoff: [{report.artifacts.handoff_path}]({report.artifacts.handoff_path})",
+        f"- Artifact index: [{report.artifacts.artifact_index_path}]({report.artifacts.artifact_index_path})",
+        f"- JSON evidence report: [{report.artifacts.report_path}]({report.artifacts.report_path})",
+        "",
+        "## G00-G12 Gates",
+        "| Gate | Status |",
+        "| --- | --- |",
+    ]
+    if report.gates:
+        lines.extend(f"| `{_md_cell(gate.gate_id)}` | `{_md_cell(gate.status)}` |" for gate in report.gates)
+    else:
+        lines.append("| none | none |")
+    lines.extend(
+        [
+            "",
+            "## Verifier Findings",
+            *_finding_lines(report.verifier_findings),
+            "",
+            "## Signoff Findings",
+            *_finding_lines(report.signoff_findings),
+            "",
+            "## Blockers",
+            *_list_lines(report.blockers),
+            "",
+            "## Warnings",
+            *_list_lines(report.warnings),
+            "",
+            "## Missing Evidence",
+            *_list_lines(report.missing_evidence),
+            "",
+            "## Trace Summary",
+            f"- Event count: `{report.trace_summary.event_count}`",
+            f"- Artifact ref count: `{report.trace_summary.artifact_ref_count}`",
+            f"- Missing required fields: `{', '.join(report.trace_summary.missing_required_fields) if report.trace_summary.missing_required_fields else 'none'}`",
+            f"- Terminal events: `{', '.join(report.trace_summary.terminal_events) if report.trace_summary.terminal_events else 'none'}`",
+            "",
+            "## Replay Summary",
+            f"- Event count: `{report.replay_summary.event_count}`",
+            f"- Checkpoint count: `{report.replay_summary.checkpoint_count}`",
+            f"- Debug issue count: `{report.replay_summary.debug_issue_count}`",
+            f"- Has blackboard snapshot: `{str(report.replay_summary.has_blackboard_snapshot).lower()}`",
+            f"- Has signoff: `{str(report.replay_summary.has_signoff).lower()}`",
+            f"- Has handoff: `{str(report.replay_summary.has_handoff).lower()}`",
+            "",
+            "## Reviewer Note",
+            _reviewer_note(report),
+            "",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _load_trace(path: Path, blockers: list[str], missing: list[str]) -> list[dict[str, Any]]:
@@ -401,6 +476,45 @@ def _readiness_score(signoff: SignoffCertificate | None, handoff_ready: bool) ->
     if signoff.passed and gates_pass:
         return 60
     return 20
+
+
+def _finding_lines(findings: tuple[FindingEvidence, ...]) -> list[str]:
+    if not findings:
+        return ["- None"]
+    return [
+        f"- `{finding.gate_id}` `{finding.severity}` `{finding.code}`: {finding.message}"
+        + (f" Evidence: `{', '.join(finding.evidence_refs)}`" if finding.evidence_refs else "")
+        for finding in findings
+    ]
+
+
+def _list_lines(items: tuple[str, ...]) -> list[str]:
+    if not items:
+        return ["- None"]
+    return [f"- `{item}`" for item in items]
+
+
+def _reviewer_note(report: Agent1EvidenceReport) -> str:
+    if report.verdict == "ready":
+        return (
+            "This run is ready because debug evidence is complete, G00-G12 signoff gates pass, "
+            "and the Agent1-to-Agent2 handoff is backed by a valid passing signoff certificate."
+        )
+    reasons = []
+    if report.blockers:
+        reasons.append(f"blockers exist ({', '.join(report.blockers[:5])})")
+    if report.missing_evidence:
+        reasons.append(f"missing evidence exists ({', '.join(report.missing_evidence[:5])})")
+    if report.readiness_score < 100:
+        reasons.append(f"readiness score is {report.readiness_score}")
+    if report.debug_completeness_score < 100:
+        reasons.append(f"debug completeness score is {report.debug_completeness_score}")
+    detail = "; ".join(reasons) if reasons else "the evidence verdict is not ready"
+    return f"This run is not ready because {detail}."
+
+
+def _md_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ")
 
 
 def _display_path(path: Path) -> str:

@@ -43,7 +43,7 @@ This file maps the current public repo shape for future AI/Codex sessions.
 - `mock_swarm` uses deterministic mock model behavior through `ModelRouter`.
 - `local_llm` uses an OpenAI-compatible client through `ModelRouter`; live endpoint credentials remain optional.
 - Agent1 artifacts are written under output directories such as `reports/`, `contracts/`, `trace/`, `replay/`, `blackboard/`, and `checkpoints/`.
-- Agent1 evidence reports are written under `artifacts/agent1_evidence_report.json` with artifact reference checks in `artifacts/agent1_artifact_index.json`.
+- Agent1 evidence reports are written under `artifacts/agent1_evidence_report.json` and `artifacts/agent1_evidence_report.md` with artifact reference checks in `artifacts/agent1_artifact_index.json`.
 - Studio maps core events into UI/runtime tracking events and blocks Agent2 draft jobs unless handoff validation passes.
 
 ## Test Coverage Map

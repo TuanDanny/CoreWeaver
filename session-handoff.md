@@ -33,10 +33,9 @@ powershell -ExecutionPolicy Bypass -File scripts/dev_check.ps1
 - Improve Studio visualizations for new `agent1_*` event types if needed.
 
 ## Latest Task
-- Goal: add Agent1 evidence report generation for proof/debug review.
-- Branch: `codex/agent1-evidence-report`.
-- Base note: branch includes local commit `Upgrade Agent1 verifier and replay` from `codex/upgrade-agent1-verifier`; keep evidence-report changes as the next focused commit.
-- Files changed: `src/coreweaver/agents/agent1/evidence_report.py`, `scripts/generate_agent1_evidence_report.py`, `scripts/run_benchmarks.py`, `tests/test_agent1_evidence_report.py`, `session-handoff.md`.
-- Tests run: `python -m pytest -q tests/test_agent1_evidence_report.py`; `python -m pytest -q tests`; `python scripts/harness_check.py --json`; `python scripts/run_benchmarks.py --cases benchmarks/cases --json`.
-- Risks: report verdict is intentionally strict; non-design, clarification, HITL, conflict, missing trace/replay, failed signoff, incomplete gates, and invalid ready handoff all produce `not_ready`.
-- Reviewer notes: report reads real trace/replay/signoff/handoff artifacts, writes `artifacts/agent1_artifact_index.json` and `artifacts/agent1_evidence_report.json`, and benchmark results now include evidence report path plus debug/readiness scores.
+- Goal: add human-readable Agent1 evidence Markdown reports next to existing JSON evidence reports.
+- Branch: `codex/agent1-evidence-markdown-report`.
+- Files changed: `src/coreweaver/agents/agent1/evidence_report.py`, `scripts/generate_agent1_evidence_report.py`, `scripts/run_benchmarks.py`, `tests/test_agent1_evidence_report.py`, `tests/test_benchmark_skeleton.py`, `docs/REPO_MAP.md`, `session-handoff.md`.
+- Tests run: `python -m pytest -q tests/test_agent1_evidence_report.py`; `python -m pytest -q tests/test_benchmark_skeleton.py`.
+- Risks: Markdown is a rendered view of the JSON evidence report only; runtime reasoning, signoff, and handoff behavior are intentionally unchanged.
+- Reviewer notes: Markdown output is `artifacts/agent1_evidence_report.md`; CLI non-JSON mode prints verdict plus JSON and Markdown paths; benchmark results include `evidence_markdown_report`.

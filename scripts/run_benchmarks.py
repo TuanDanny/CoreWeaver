@@ -49,6 +49,7 @@ async def _run_case(case: dict[str, object], output_root: Path) -> dict[str, obj
         "missing_topics": missing_topics,
         "artifact": str(plan_path).replace("\\", "/") if plan_path.exists() else "",
         "evidence_report": evidence_report.artifacts.report_path,
+        "evidence_markdown_report": evidence_report.artifacts.markdown_report_path,
         "evidence_verdict": evidence_report.verdict,
         "debug_completeness_score": evidence_report.debug_completeness_score,
         "readiness_score": evidence_report.readiness_score,
