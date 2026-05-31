@@ -1,0 +1,7 @@
+{
+  "case_id": "009_i2c_basic",
+  "requirement": "Design an I2C controller on APB with 32-bit configuration registers, clock divider, interrupt status W1C, 100MHz clock, synchronous reset.",
+  "expected_status": "PLAN_REVIEW",
+  "expected_topics": ["APB", "CSR", "Interrupt", "100MHz"],
+  "mutation_tags": ["i2c_basic"]
+}

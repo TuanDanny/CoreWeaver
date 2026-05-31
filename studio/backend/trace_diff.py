@@ -2,11 +2,32 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
-from semiconductor_swarm.tracing import read_trace_events, stable_hash
+try:
+    from semiconductor_swarm.tracing import read_trace_events, stable_hash
+except ModuleNotFoundError:
+    def read_trace_events(output_dir: str | Path) -> list[dict[str, Any]]:
+        trace_root = Path(output_dir) / "reports" / "traces"
+        events: list[dict[str, Any]] = []
+        for trace_file in sorted(trace_root.glob("*.jsonl")):
+            for line in trace_file.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(item, dict):
+                    events.append({**item, "source_trace_file": trace_file.name})
+        return events
+
+    def stable_hash(value: Any) -> str:
+        payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 DIFF_SCHEMA_VERSION = "studio.trace_diff_report.v1"
 

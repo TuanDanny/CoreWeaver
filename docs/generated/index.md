@@ -1,19 +1,11 @@
----
-title: Generated Index
-status: active
-owner: docs-governance
-type: generated
-last_reviewed: 2026-05-20
-source_of_truth: false
----
-
 # Generated Index
 
-Manual generated-style indexes:
-- `agent-contract-index.md`
-- `test-coverage-index.md`
-- `prompt-contract-index.md`
-- `tool-index.md`
+Generated reports should be written outside source or committed only when intentionally reviewed.
 
-Automation candidate:
-- generate these files from `docs/knowledge-map.yaml`, tests, and source tree.
+## Allowed Generated Artifacts
+- Harness replay bundles from local runs.
+- Benchmark result reports.
+- Debug issue exports.
+
+## Rule
+Do not commit local outputs unless they are curated evidence.

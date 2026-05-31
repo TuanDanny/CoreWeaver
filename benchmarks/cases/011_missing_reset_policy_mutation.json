@@ -1,0 +1,7 @@
+{
+  "case_id": "011_missing_reset_policy_mutation",
+  "requirement": "Design an APB GPIO peripheral with 32-bit CSRs, interrupt status W1C, 100MHz clock, and NO_RESET_POLICY_MUTATION.",
+  "expected_status": "HITL_REQUIRED",
+  "expected_topics": ["reset_clock_cdc_missing", "agent1_handoff_blocked"],
+  "mutation_tags": ["missing_reset_policy"]
+}

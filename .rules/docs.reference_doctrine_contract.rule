@@ -1,0 +1,23 @@
+{
+  "id": "docs.reference_doctrine_contract",
+  "version": "1.0.0",
+  "severity": "error",
+  "description": "Reference documents guide CoreWeaver doctrine; CoreWeaver-specific swarm strategies must remain pluggable package modules instead of copied or hardwired behavior.",
+  "applies_to": "docs",
+  "when": {
+    "required_text_missing": {
+      "path": "docs/HARNESS_ENGINEERING.md",
+      "contains": [
+        "Reference Doctrine vs CoreWeaver Customization",
+        "Reference documents are doctrine inputs, not implementation blueprints to copy literally.",
+        "CoreWeaver-specific strategies must stay pluggable behind package boundaries.",
+        "Custom clustering ideas may guide swarm routing, but they must remain replaceable modules instead of hardwired behavior."
+      ]
+    }
+  },
+  "then": {
+    "require_human_review": {
+      "action": "agent_core_design"
+    }
+  }
+}

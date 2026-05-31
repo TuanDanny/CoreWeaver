@@ -1,0 +1,23 @@
+{
+  "id": "core.framework_first",
+  "version": "1.0.0",
+  "severity": "error",
+  "description": "Core framework rails must exist before Agent1 reasoning is added.",
+  "applies_to": "core",
+  "when": {
+    "required_text_missing": {
+      "path": "docs/HARNESS_ENGINEERING.md",
+      "contains": [
+        "Framework-First Core Contract",
+        "Message-first runtime is mandatory before Agent1 reasoning.",
+        "Every model/tool call must go through adapters.",
+        "No real Principal/Middle/Leaf reasoning may be implemented before the framework gate passes."
+      ]
+    }
+  },
+  "then": {
+    "block": {
+      "action": "agent1_reasoning_merge"
+    }
+  }
+}

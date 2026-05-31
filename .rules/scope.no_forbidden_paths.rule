@@ -1,0 +1,15 @@
+{
+  "id": "scope.no_forbidden_paths",
+  "version": "1.0.0",
+  "severity": "error",
+  "description": "Scope violations must be resolved before merge or handoff.",
+  "applies_to": "scope",
+  "when": {
+    "scope_violation_exists": {}
+  },
+  "then": {
+    "require_human_review": {
+      "action": "scope_change"
+    }
+  }
+}

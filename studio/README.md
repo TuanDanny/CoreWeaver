@@ -1,6 +1,6 @@
-# SWARM AI STUDIO V6.5
+# CoreWeaver Studio Shell
 
-Local web cockpit for Semiconductor Swarm.
+Local web cockpit for CoreWeaver.
 
 ## Run
 
@@ -17,8 +17,9 @@ Frontend:
 - Vite React on `http://127.0.0.1:5173`
 
 ## Safety
-- Core `semiconductor_swarm/` stays unchanged.
-- Runner remains `app/swarm_runner.py`.
+- Studio stays a shell. Core logic connects through the public `coreweaver` package boundary.
+- Studio launches `src/coreweaver/studio_runner.py`; `python -m coreweaver.studio_runner` also works when `PYTHONPATH=src`.
+- Current core is a skeleton adapter only; Agent1/Agent2 logic plugs in later.
 - API key stays in `codex_api.local.json` and is never returned raw.
 - `studio/settings.json` is local-only. Use `studio/settings.example.json` as the public template.
 - Web Settings only selects credential refs. Rotate the owner key locally with:

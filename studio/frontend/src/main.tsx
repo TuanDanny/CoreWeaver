@@ -192,6 +192,7 @@ function App() {
   const [connection, setConnection] = useState<ConnectionState>("Disconnected");
   const [backendHealth, setBackendHealth] = useState<BackendHealthState>("checking");
   const [hydrationState, setHydrationState] = useState<HydrationState>("idle");
+  const [introOpen, setIntroOpen] = useState(() => new URLSearchParams(window.location.search).get("intro") === "1" || sessionStorage.getItem("coreweaver.intro.seen") !== "1");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [requirement, setRequirement] = useState(emptyRun.requirement);
   const [projectName, setProjectName] = useState(emptyRun.project_name);
@@ -409,13 +410,14 @@ function App() {
   const tokenTotal = run.metrics.codex_total_tokens === undefined ? null : Number(run.metrics.codex_total_tokens);
   const cost = run.metrics.codex_estimated_cost_usd === undefined ? null : Number(run.metrics.codex_estimated_cost_usd);
   const activeCredentialHealth = settings?.credentialHealth?.[settings.activeKeyRef] ?? "unchecked";
+  const coreRequiresCredential = settings?.coreRuntime?.requiresCredential ?? true;
   const startBlockedReason = requirement.trim().length === 0
     ? "Requirement is required before Start."
     : requirement.length > 2000
       ? "Requirement exceeds 2000 characters."
-      : activeCredentialHealth === "missing"
+      : coreRequiresCredential && activeCredentialHealth === "missing"
     ? "Credential owner missing. Update server key before Start."
-    : activeCredentialHealth === "invalid"
+    : coreRequiresCredential && activeCredentialHealth === "invalid"
       ? "Credential owner invalid. Test Connection or update server key before Start."
       : "";
 
@@ -616,6 +618,10 @@ function App() {
   const approveAction = String(run.pause?.action_required ?? "");
   const canApprovePlan = run.status === "paused" && (approveAction === "HUMAN_REVIEW" || (approveAction === "PLAN_REVIEW" && Boolean(run.current_plan_path)));
   const activeRunMode = (run.planning_mode || planningMode) as PlanningMode;
+  const closeIntro = useCallback(() => {
+    sessionStorage.setItem("coreweaver.intro.seen", "1");
+    setIntroOpen(false);
+  }, []);
 
   return (
     <div className="min-h-screen overflow-hidden bg-cosmic text-slate-100 font-ui">
@@ -658,13 +664,426 @@ function App() {
           await doStart(payload);
         }}
       />
+      {introOpen && <CosmicChipIntro onEnter={closeIntro} />}
     </div>
   );
 }
 
+function CosmicChipIntro({ onEnter }: { onEnter: () => void }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pointerRef = useRef({ x: 0.5, y: 0.5, active: false });
+  const [exiting, setExiting] = useState(false);
+  const [motionStyle, setMotionStyle] = useState<"orbit" | "signal">("orbit");
+  const exitTimerRef = useRef<number | null>(null);
+
+  const triggerEnter = useCallback(() => {
+    if (exiting) return;
+    setExiting(true);
+    exitTimerRef.current = window.setTimeout(onEnter, 980);
+  }, [exiting, onEnter]);
+
+  useEffect(() => {
+    return () => {
+      if (exitTimerRef.current !== null) window.clearTimeout(exitTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    let animationFrame = 0;
+    let width = 0;
+    let height = 0;
+    let dpr = 1;
+    const particles = Array.from({ length: 86 }, (_, index) => ({
+      x: Math.random(),
+      y: Math.random(),
+      z: 0.35 + Math.random() * 0.95,
+      vx: (Math.random() - 0.5) * 0.00034,
+      vy: (Math.random() - 0.5) * 0.00028,
+      r: 0.8 + Math.random() * 1.9,
+      phase: Math.random() * Math.PI * 2,
+      group: index % 7,
+    }));
+    const lanes = Array.from({ length: 28 }, (_, index) => ({
+      angle: (Math.PI * 2 * index) / 28,
+      length: 0.18 + Math.random() * 0.32,
+      speed: 0.6 + Math.random() * 1.4,
+      offset: Math.random(),
+    }));
+    const deepStars = Array.from({ length: 180 }, () => ({
+      x: Math.random(),
+      y: Math.random(),
+      z: Math.random() * 0.85 + 0.15,
+      r: Math.random() * 1.25 + 0.25,
+      twinkle: Math.random() * Math.PI * 2,
+      hue: Math.random(),
+    }));
+    const nebulaClouds = Array.from({ length: 9 }, (_, index) => ({
+      x: Math.random(),
+      y: Math.random(),
+      radius: 0.22 + Math.random() * 0.28,
+      drift: (index % 2 === 0 ? 1 : -1) * (0.000015 + Math.random() * 0.00002),
+      phase: Math.random() * Math.PI * 2,
+      color: index % 3,
+    }));
+    const spaceObjects = [
+      { kind: "planet", x: 0.14, y: 0.25, radius: 0.092, z: 0.42, phase: 0.2, hue: "cyan", ring: true },
+      { kind: "moon", x: 0.79, y: 0.19, radius: 0.033, z: 0.7, phase: 1.7, hue: "ice", ring: false },
+      { kind: "planet", x: 0.88, y: 0.76, radius: 0.064, z: 0.52, phase: 2.4, hue: "violet", ring: false },
+      { kind: "asteroid", x: 0.23, y: 0.78, radius: 0.018, z: 0.9, phase: 3.2, hue: "rock", ring: false },
+      { kind: "asteroid", x: 0.68, y: 0.64, radius: 0.012, z: 0.82, phase: 4.1, hue: "rock", ring: false },
+    ];
+
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect();
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      width = Math.max(1, Math.floor(rect.width));
+      height = Math.max(1, Math.floor(rect.height));
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    const drawChip = (time: number, px: number, py: number) => {
+      const cx = width * (0.5 + (px - 0.5) * 0.028);
+      const cy = height * (0.52 + (py - 0.5) * 0.024);
+      const size = Math.min(width, height) * 0.26;
+      const half = size * 0.5;
+      const pulse = Math.sin(time * 0.0022) * 0.5 + 0.5;
+      context.save();
+      context.translate(cx, cy);
+      context.rotate((px - 0.5) * 0.08);
+      context.shadowColor = "rgba(53,214,255,0.55)";
+      context.shadowBlur = 26 + pulse * 18;
+      const bodyGradient = context.createLinearGradient(-half, -half, half, half);
+      bodyGradient.addColorStop(0, "rgba(19,33,55,0.96)");
+      bodyGradient.addColorStop(0.48, "rgba(5,13,28,0.98)");
+      bodyGradient.addColorStop(1, "rgba(35,74,92,0.92)");
+      context.fillStyle = bodyGradient;
+      roundRect(context, -half, -half, size, size, 24);
+      context.fill();
+      context.lineWidth = 1.3;
+      context.strokeStyle = "rgba(119,232,255,0.72)";
+      context.stroke();
+
+      context.shadowBlur = 0;
+      for (let i = -5; i <= 5; i += 1) {
+        const offset = (i * size) / 7;
+        context.strokeStyle = i % 2 === 0 ? "rgba(53,214,255,0.42)" : "rgba(46,229,157,0.30)";
+        context.lineWidth = 0.8;
+        context.beginPath();
+        context.moveTo(-half * 0.72, offset * 0.46);
+        context.lineTo(-half * 0.22, offset * 0.46);
+        context.lineTo(half * 0.16, -offset * 0.28);
+        context.lineTo(half * 0.72, -offset * 0.28);
+        context.stroke();
+      }
+      for (let side = -1; side <= 1; side += 2) {
+        for (let i = -5; i <= 5; i += 1) {
+          const y = (i * size) / 8;
+          context.strokeStyle = "rgba(120,232,255,0.48)";
+          context.beginPath();
+          context.moveTo(side * half, y);
+          context.lineTo(side * (half + size * 0.09), y);
+          context.stroke();
+        }
+      }
+      context.fillStyle = "rgba(46,229,157,0.92)";
+      for (let i = 0; i < 18; i += 1) {
+        const angle = (Math.PI * 2 * i) / 18 + time * 0.00022;
+        const radius = half * (0.22 + (i % 3) * 0.13);
+        context.beginPath();
+        context.arc(Math.cos(angle) * radius, Math.sin(angle) * radius, 2.2, 0, Math.PI * 2);
+        context.fill();
+      }
+      context.restore();
+    };
+
+    const drawSpaceObject = (object: typeof spaceObjects[number], time: number, px: number, py: number) => {
+      const parallax = (1.15 - object.z) * 74;
+      const driftX = Math.sin(time * 0.00018 + object.phase) * 10 * object.z;
+      const driftY = Math.cos(time * 0.00015 + object.phase) * 7 * object.z;
+      const x = object.x * width + (px - 0.5) * parallax + driftX;
+      const y = object.y * height + (py - 0.5) * parallax * 0.62 + driftY;
+      const radius = Math.min(width, height) * object.radius;
+      context.save();
+      context.translate(x, y);
+      context.rotate(Math.sin(time * 0.00022 + object.phase) * 0.16);
+      if (object.kind === "asteroid") {
+        context.fillStyle = "rgba(164, 188, 205, 0.34)";
+        context.strokeStyle = "rgba(226, 245, 255, 0.22)";
+        context.lineWidth = 1;
+        context.beginPath();
+        for (let point = 0; point < 9; point += 1) {
+          const angle = (Math.PI * 2 * point) / 9;
+          const rough = radius * (0.72 + ((point * 37) % 11) / 28);
+          const pxPoint = Math.cos(angle) * rough;
+          const pyPoint = Math.sin(angle) * rough * 0.78;
+          if (point === 0) context.moveTo(pxPoint, pyPoint);
+          else context.lineTo(pxPoint, pyPoint);
+        }
+        context.closePath();
+        context.fill();
+        context.stroke();
+        context.restore();
+        return;
+      }
+      const planetGradient = context.createRadialGradient(-radius * 0.35, -radius * 0.35, radius * 0.1, 0, 0, radius * 1.25);
+      if (object.hue === "violet") {
+        planetGradient.addColorStop(0, "rgba(223,214,255,0.92)");
+        planetGradient.addColorStop(0.42, "rgba(112,83,205,0.72)");
+        planetGradient.addColorStop(1, "rgba(17,13,42,0.72)");
+      } else if (object.hue === "ice") {
+        planetGradient.addColorStop(0, "rgba(242,252,255,0.9)");
+        planetGradient.addColorStop(0.46, "rgba(119,232,255,0.54)");
+        planetGradient.addColorStop(1, "rgba(9,34,54,0.62)");
+      } else {
+        planetGradient.addColorStop(0, "rgba(216,255,252,0.96)");
+        planetGradient.addColorStop(0.42, "rgba(53,214,255,0.58)");
+        planetGradient.addColorStop(1, "rgba(3,17,38,0.76)");
+      }
+      context.shadowColor = object.hue === "violet" ? "rgba(140,95,255,0.38)" : "rgba(53,214,255,0.32)";
+      context.shadowBlur = radius * 0.8;
+      context.fillStyle = planetGradient;
+      context.beginPath();
+      context.arc(0, 0, radius, 0, Math.PI * 2);
+      context.fill();
+      context.shadowBlur = 0;
+      context.strokeStyle = "rgba(255,255,255,0.16)";
+      context.stroke();
+      context.fillStyle = "rgba(0,0,0,0.18)";
+      context.beginPath();
+      context.ellipse(radius * 0.28, radius * 0.08, radius * 0.54, radius * 0.86, -0.38, 0, Math.PI * 2);
+      context.fill();
+      if (object.ring) {
+        context.strokeStyle = "rgba(196,246,255,0.42)";
+        context.lineWidth = 2;
+        context.beginPath();
+        context.ellipse(0, 0, radius * 1.65, radius * 0.46, -0.24, 0, Math.PI * 2);
+        context.stroke();
+        context.strokeStyle = "rgba(46,229,157,0.18)";
+        context.lineWidth = 5;
+        context.beginPath();
+        context.ellipse(0, 0, radius * 1.88, radius * 0.53, -0.24, 0, Math.PI * 2);
+        context.stroke();
+      }
+      context.restore();
+    };
+
+    const draw = (time: number) => {
+      const pointer = pointerRef.current;
+      const px = pointer.x;
+      const py = pointer.y;
+      context.clearRect(0, 0, width, height);
+      const bg = context.createRadialGradient(width * px, height * py, 0, width * 0.5, height * 0.5, Math.max(width, height) * 0.72);
+      bg.addColorStop(0, "rgba(53,214,255,0.18)");
+      bg.addColorStop(0.36, "rgba(10,22,42,0.74)");
+      bg.addColorStop(1, "rgba(2,5,13,1)");
+      context.fillStyle = bg;
+      context.fillRect(0, 0, width, height);
+
+      for (const cloud of nebulaClouds) {
+        const driftX = Math.sin(time * cloud.drift + cloud.phase) * width * 0.035;
+        const driftY = Math.cos(time * cloud.drift * 0.8 + cloud.phase) * height * 0.028;
+        const x = cloud.x * width + driftX + (px - 0.5) * width * 0.022;
+        const y = cloud.y * height + driftY + (py - 0.5) * height * 0.018;
+        const radius = Math.max(width, height) * cloud.radius;
+        const nebula = context.createRadialGradient(x, y, 0, x, y, radius);
+        if (cloud.color === 0) {
+          nebula.addColorStop(0, "rgba(53,214,255,0.12)");
+          nebula.addColorStop(0.44, "rgba(35,80,160,0.055)");
+        } else if (cloud.color === 1) {
+          nebula.addColorStop(0, "rgba(46,229,157,0.085)");
+          nebula.addColorStop(0.46, "rgba(35,118,118,0.045)");
+        } else {
+          nebula.addColorStop(0, "rgba(140,95,255,0.105)");
+          nebula.addColorStop(0.48, "rgba(61,49,130,0.052)");
+        }
+        nebula.addColorStop(1, "rgba(0,0,0,0)");
+        context.fillStyle = nebula;
+        context.fillRect(0, 0, width, height);
+      }
+
+      const centerX = width * (0.5 + (px - 0.5) * 0.018);
+      const centerY = height * (0.52 + (py - 0.5) * 0.018);
+      context.save();
+      context.translate(centerX, centerY);
+      context.rotate((px - 0.5) * 0.18 + time * 0.000025);
+      for (let ring = 0; ring < 5; ring += 1) {
+        const radiusX = Math.min(width, height) * (0.25 + ring * 0.085);
+        const radiusY = radiusX * (0.35 + ring * 0.035);
+        context.strokeStyle = `rgba(53,214,255,${0.05 - ring * 0.006})`;
+        context.lineWidth = 1;
+        context.beginPath();
+        context.ellipse(0, 0, radiusX, radiusY, ring * 0.22, 0, Math.PI * 2);
+        context.stroke();
+      }
+      context.restore();
+
+      for (const star of deepStars) {
+        const drift = (1 - star.z) * 18;
+        const x = ((star.x * width + (px - 0.5) * drift + time * 0.003 * star.z) % (width + 20)) - 10;
+        const y = star.y * height + (py - 0.5) * drift * 0.7;
+        const alpha = 0.22 + star.z * 0.46 + Math.sin(time * 0.0025 + star.twinkle) * 0.18;
+        const color = star.hue > 0.78 ? "119,232,255" : star.hue > 0.58 ? "178,205,255" : "255,255,255";
+        context.fillStyle = `rgba(${color},${Math.max(0.08, Math.min(0.9, alpha))})`;
+        context.beginPath();
+        context.arc(x, y, star.r * star.z, 0, Math.PI * 2);
+        context.fill();
+      }
+
+      for (const particle of particles) {
+        particle.x += particle.vx * particle.z + (px - 0.5) * 0.00008 * particle.z;
+        particle.y += particle.vy * particle.z + (py - 0.5) * 0.00006 * particle.z;
+        if (particle.x < -0.04) particle.x = 1.04;
+        if (particle.x > 1.04) particle.x = -0.04;
+        if (particle.y < -0.04) particle.y = 1.04;
+        if (particle.y > 1.04) particle.y = -0.04;
+      }
+
+      for (let i = 0; i < particles.length; i += 1) {
+        const a = particles[i];
+        const ax = a.x * width;
+        const ay = a.y * height;
+        for (let j = i + 1; j < particles.length; j += 1) {
+          const b = particles[j];
+          if (a.group !== b.group) continue;
+          const bx = b.x * width;
+          const by = b.y * height;
+          const distance = Math.hypot(ax - bx, ay - by);
+          if (distance > 138) continue;
+          const opacity = (1 - distance / 138) * 0.22;
+          context.strokeStyle = `rgba(53,214,255,${opacity})`;
+          context.lineWidth = 0.8;
+          context.beginPath();
+          context.moveTo(ax, ay);
+          context.lineTo(bx, by);
+          context.stroke();
+        }
+      }
+
+      for (const lane of lanes) {
+        const cx = width * (0.5 + (px - 0.5) * 0.035);
+        const cy = height * (0.52 + (py - 0.5) * 0.03);
+        const progress = (lane.offset + time * 0.00006 * lane.speed) % 1;
+        const inner = Math.min(width, height) * 0.18;
+        const outer = inner + Math.min(width, height) * lane.length;
+        const x1 = cx + Math.cos(lane.angle) * inner;
+        const y1 = cy + Math.sin(lane.angle) * inner;
+        const x2 = cx + Math.cos(lane.angle) * outer;
+        const y2 = cy + Math.sin(lane.angle) * outer;
+        context.strokeStyle = "rgba(46,229,157,0.16)";
+        context.lineWidth = 1;
+        context.beginPath();
+        context.moveTo(x1, y1);
+        context.lineTo(x2, y2);
+        context.stroke();
+        context.fillStyle = "rgba(119,232,255,0.78)";
+        context.beginPath();
+        context.arc(x1 + (x2 - x1) * progress, y1 + (y2 - y1) * progress, 2.4, 0, Math.PI * 2);
+        context.fill();
+      }
+
+      for (const particle of particles) {
+        const x = particle.x * width + (px - 0.5) * 16 * particle.z;
+        const y = particle.y * height + (py - 0.5) * 14 * particle.z;
+        const alpha = 0.42 + Math.sin(time * 0.002 + particle.phase) * 0.22;
+        context.fillStyle = `rgba(226,245,255,${alpha})`;
+        context.beginPath();
+        context.arc(x, y, particle.r * particle.z, 0, Math.PI * 2);
+        context.fill();
+      }
+
+      for (const object of spaceObjects) drawSpaceObject(object, time, px, py);
+
+      const cometProgress = (time * 0.000045) % 1.35;
+      if (cometProgress < 1) {
+        const cometX = width * (1.04 - cometProgress * 1.22) + (px - 0.5) * 42;
+        const cometY = height * (0.16 + cometProgress * 0.36) + (py - 0.5) * 24;
+        const tail = context.createLinearGradient(cometX + 150, cometY - 58, cometX, cometY);
+        tail.addColorStop(0, "rgba(53,214,255,0)");
+        tail.addColorStop(0.7, "rgba(53,214,255,0.22)");
+        tail.addColorStop(1, "rgba(255,255,255,0.88)");
+        context.strokeStyle = tail;
+        context.lineWidth = 3;
+        context.beginPath();
+        context.moveTo(cometX + 150, cometY - 58);
+        context.lineTo(cometX, cometY);
+        context.stroke();
+        context.fillStyle = "rgba(255,255,255,0.92)";
+        context.beginPath();
+        context.arc(cometX, cometY, 3.2, 0, Math.PI * 2);
+        context.fill();
+      }
+      drawChip(time, px, py);
+      animationFrame = requestAnimationFrame(draw);
+    };
+
+    resize();
+    animationFrame = requestAnimationFrame(draw);
+    window.addEventListener("resize", resize);
+    return () => {
+      window.removeEventListener("resize", resize);
+      cancelAnimationFrame(animationFrame);
+    };
+  }, []);
+
+  const updatePointer = (event: React.PointerEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = (event.clientX - rect.left) / Math.max(1, rect.width);
+    const y = (event.clientY - rect.top) / Math.max(1, rect.height);
+    pointerRef.current = { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)), active: true };
+    event.currentTarget.style.setProperty("--intro-x", `${x * 100}%`);
+    event.currentTarget.style.setProperty("--intro-y", `${y * 100}%`);
+  };
+
+  return <section className={`intro-shell intro-motion-${motionStyle} ${exiting ? "intro-exiting" : ""}`} onPointerMove={updatePointer} onPointerLeave={() => { pointerRef.current.active = false; }}>
+    <canvas ref={canvasRef} className="intro-canvas" aria-hidden="true" />
+    <div className="intro-warp" aria-hidden="true" />
+    <div className="intro-noise" />
+    <div className="intro-content">
+      <div className="intro-kicker"><Cpu className="h-4 w-4" /> CoreWeaver Studio</div>
+      <h1 className="intro-title" aria-label="AI Agents for Chip Design">
+        {["AI", "Agents", "for", "Chip", "Design"].map((word, index) => <span key={word} style={{ "--word-index": index } as React.CSSProperties}>{word}</span>)}
+      </h1>
+      <p className="intro-copy">Transform ideas into silicon architectures with autonomous planning, debugging, and execution.</p>
+      <div className="intro-motion-switch" aria-label="Intro text motion style">
+        <button className={motionStyle === "orbit" ? "active" : ""} onClick={() => setMotionStyle("orbit")} disabled={exiting}>Orbit</button>
+        <button className={motionStyle === "signal" ? "active" : ""} onClick={() => setMotionStyle("signal")} disabled={exiting}>Signal</button>
+      </div>
+      <div className="intro-actions">
+        <button className="intro-primary" onClick={triggerEnter} disabled={exiting}><Rocket className="h-5 w-5" /> {exiting ? "Warping..." : "Enter Studio"}</button>
+        <button className="intro-secondary" onClick={triggerEnter} disabled={exiting}>Skip intro</button>
+      </div>
+      <div className="intro-stats" aria-label="Studio status">
+        <span>Multi-Agent Planning</span>
+        <span>Architecture-Aware</span>
+        <span>Easy Design</span>
+      </div>
+    </div>
+  </section>;
+}
+
+function roundRect(context: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
+  const safeRadius = Math.min(radius, width / 2, height / 2);
+  context.beginPath();
+  context.moveTo(x + safeRadius, y);
+  context.lineTo(x + width - safeRadius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  context.lineTo(x + width, y + height - safeRadius);
+  context.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  context.lineTo(x + safeRadius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  context.lineTo(x, y + safeRadius);
+  context.quadraticCurveTo(x, y, x + safeRadius, y);
+}
+
 function TopBar({ connection, backendHealth, hydrationState, activeRun }: { connection: ConnectionState; backendHealth: BackendHealthState; hydrationState: HydrationState; activeRun: boolean }) {
   return <header className="glass flex items-center justify-between border-b border-cyanGlow/20 px-4">
-    <div className="flex items-center gap-3 text-sm"><Cpu className="h-5 w-5 text-cyanGlow" /><span className="font-bold tracking-wide">SWARM AI STUDIO V7.3</span><span className="text-slate-400">Workspace Mission Control</span></div>
+    <div className="flex items-center gap-3 text-sm"><Cpu className="h-5 w-5 text-cyanGlow" /><span className="font-bold tracking-wide">CoreWeaver Studio</span><span className="text-slate-400">Workspace Mission Control</span></div>
     <div className="flex items-center gap-2">
       <span className={`chip ${backendHealth === "error" ? "danger" : ""}`}>Backend {backendHealth}</span>
       <span className="chip">{connection === "Connected" ? <Wifi className="h-4 w-4" /> : <WifiOff className="h-4 w-4" />} WS {connection}</span>

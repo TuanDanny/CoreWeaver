@@ -1,0 +1,7 @@
+{
+  "case_id": "003_axi_dma_peripheral",
+  "requirement": "Design an AXI4 DMA peripheral with 64-bit data interface, APB control registers, descriptor pointer CSRs, SRAM staging buffer, interrupt on completion/error, 250MHz clock, active-low reset.",
+  "expected_status": "PLAN_REVIEW",
+  "expected_topics": ["AXI4", "APB", "DMA", "SRAM", "Interrupt"],
+  "mutation_tags": ["axi_dma", "mixed_bus"]
+}

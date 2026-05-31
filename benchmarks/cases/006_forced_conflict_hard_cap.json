@@ -1,0 +1,7 @@
+{
+  "case_id": "006_forced_conflict_hard_cap",
+  "requirement": "Design an AXI4/APB secure accelerator with 64KB SRAM, 300MHz clock, synchronous reset, AES key protection, and FORCE_M06_M07_CONFLICT.",
+  "expected_status": "CONFLICT_REQUIRED",
+  "expected_topics": ["Forced test conflict", "max challenge rounds"],
+  "mutation_tags": ["challenge_hard_cap", "hitl_required"]
+}

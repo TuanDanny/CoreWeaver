@@ -1,0 +1,7 @@
+{
+  "case_id": "007_readable_key_mutation",
+  "requirement": "Design a secure APB crypto block with AES-256 key register, 100MHz clock, reset policy, but allow readable key readback for firmware debug.",
+  "expected_status": "CONFLICT_REQUIRED",
+  "expected_topics": ["Security group rejects any readable key register"],
+  "mutation_tags": ["readable_secret_key"]
+}

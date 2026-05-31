@@ -1,0 +1,34 @@
+{
+  "id": "architecture.src_layout",
+  "version": "1.0.0",
+  "severity": "error",
+  "description": "Project internals must live under src/ so the public repo root stays clean.",
+  "applies_to": "architecture",
+  "when": {
+    "forbidden_paths_exist": {
+      "paths": [
+        "coreweaver",
+        "harness",
+        "runtime",
+        "messages",
+        "events",
+        "hooks",
+        "orchestration",
+        "agents",
+        "models",
+        "tools",
+        "safety",
+        "debug",
+        "app",
+        "patterns",
+        "debug_runners",
+        "main.py"
+      ]
+    }
+  },
+  "then": {
+    "block": {
+      "action": "public_push"
+    }
+  }
+}

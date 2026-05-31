@@ -1,72 +1,65 @@
----
-title: Semiconductor Swarm Architecture
-status: active
-owner: swarm-graph
-type: architecture
-last_reviewed: 2026-05-23
-source_of_truth: true
-related_code:
-  - main.py
-  - semiconductor_swarm/swarm_graph.py
-related_tests:
-  - tests/test_swarm_graph.py
-  - tests/test_agent_pipeline.py
----
+# CoreWeaver Harness Architecture
 
-# Semiconductor Swarm Architecture
+## Intent
+This repo follows harness engineering: build the environment, contracts, feedback loops, and guardrails before building the swarm core.
 
-## Purpose
-Map system structure for agents and humans. Keep details in linked docs.
+## Current Boundary
+- `studio/`: existing React/FastAPI web shell.
+- `document/`: local AI/agent engineering references.
+- `src/`: source root for project internals and core packages.
+- `src/coreweaver/harness/`: new framework for contracts, trace, gates, replay, scope, and architecture rules.
+- `src/coreweaver/api.py`: public adapter boundary for Studio.
+- `src/coreweaver/contracts/`: stable plug-in contracts for Studio/Core boundaries.
+- `src/coreweaver/messages/`, `events/`, `runtime/`, `hooks/`, `models/`, `tools/`, `orchestration/`, `safety/`, `debug/`: framework-first rails for the future Agent1 core.
+- `src/coreweaver/run_profiles.py`: selectable runtime profiles for local skeleton, mock swarm, local LLM, and CI.
+- `benchmarks/`: public smoke/mutation benchmark cases for Agent1 true swarm.
+- `_private/plans/`: local-only plans, ignored by Git.
 
-## Pipeline
+## Layer Rule
+Each domain should move forward through predictable layers:
+
 ```text
-Requirements -> Agent1 Architect -> Agent1 Signoff Gate -> Agent2 RTL -> Agent5 Formal -> Agent3 DV -> Agent4 Physical -> Reports/HITL
+types -> config -> repo -> service -> runtime -> ui
+providers -> any layer
 ```
 
-## Core Components
-- `main.py`: user entrypoint.
-- `semiconductor_swarm/swarm_graph.py`: orchestration and checkpoint flow.
-- `semiconductor_swarm/agents/`: agent implementations and prompts.
-- `semiconductor_swarm/tools/`: deterministic calculators and EDA runners.
-- `studio/backend/agent_service.py`: Studio service boundary for job validation, queue dispatch, cancellation, and runner coordination.
-- `studio/backend/job_queue.py`: Python-native in-process queue with a Redis/BullMQ-compatible adapter shape for future migration.
-- `studio/backend/model_gateway.py`: provider registry boundary; V1 enables OpenAI-compatible chat completions only.
-- `studio/frontend/src/`: React mission-control UI, WebSocket logs/traces, and job queue panel.
-- `tests/`: source of executable behavior.
-- `docs/`: repository knowledge store.
+Cross-domain or backward dependencies must be rejected by structural tests before agent core logic grows.
 
-## Studio Web Boundary
-```text
-React Studio / CLI
-  -> Agent Controller API
-  -> Agent Service
-  -> In-process Job Queue
-  -> Runner / Draft Workers
-  -> semiconductor_swarm agents
-  -> Model Gateway
-  -> OpenAI-compatible endpoint
+## Harness Flow
+
+```mermaid
+flowchart TD
+  TASK["Task / Requirement"] --> SCOPE["Scope Contract"]
+  SCOPE --> TRACE["Trace Recorder"]
+  TRACE --> GATES["Verification Gates"]
+  GATES --> REPORT["Harness Report"]
+  TRACE --> REPLAY["Replay Bundle"]
+  REPORT --> DECIDE{"Pass?"}
+  DECIDE -->|"yes"| CORE["Agent1 True Swarm Runtime"]
+  DECIDE -->|"no"| HITL["HITL / Fix Harness Issue"]
 ```
 
-- Existing run APIs stay compatible: `/api/runs/start`, `/api/runs/{run_id}/resume`, `/api/runs/{run_id}/stop`.
-- Job APIs are additive: `/api/jobs`, `/api/jobs/{job_id}`, `/api/jobs/{job_id}/cancel`.
-- `job_id` links UI actions, queue records, runner events, traces, artifacts, and replay logs.
-- Browser never receives raw API keys; it only sends credential refs.
+## What Exists Now
+- Strict-ish stdlib data contracts.
+- Scope checker.
+- Layered architecture checker.
+- Trace/debug issue recorder.
+- Gate runner.
+- Secret scanner.
+- Replay bundle writer.
+- Knowledge/docs inventory checker.
+- JSONL observability sink.
+- Benchmark runner that executes Agent1 smoke/mutation cases through `mock_swarm`.
+- Harness self-check CLI.
+- Skeleton core boundary, config, artifact layout, registry, mock LLM, benchmark runner.
+- Studio adapter to new core skeleton and Agent1 true swarm profiles.
+- Message-first CoreWeaver framework packages with async event stream, hook chain, bounded loop, scheduler, model/tool adapters, safety contracts, and context/replay invariants.
+- Studio/Agent1 contract and run profiles.
+- Unit tests for negative cases.
+- Source-layout guard rule that blocks root-level core package drift.
+- Agent1 true swarm first pass: intake, clarification, Principal topology, 7 Middle groups, 24 Leaf experts, model adapter calls, blackboard writes, challenge hard cap, read-only verifier, architecture plan synthesis, signoff gates, Agent2 handoff gate, trace/replay artifacts.
 
-## Artifact Flow
-- Agent1 emits architecture/spec outputs.
-- Agent1 V7.2 signoff emits release certificate and benchmark/schema evidence when enabled.
-- Agent2 emits RTL packages, interfaces, and modules.
-- Agent5 emits SVA/SBY formal collateral.
-- Agent3 emits DV/testbench collateral.
-- Agent4 emits FPGA/QSF/SDC/backend collateral.
-
-## Tool Boundaries
-LLMs may propose structure. Deterministic tools must produce numeric PPA/bandwidth and EDA execution results.
-
-## Human Gates
-HITL is required when repeated debug/validation failures persist or when tool availability blocks signoff.
-
-## Deeper Docs
-- Knowledge store design: `docs/design-docs/repo-knowledge-store.md`
-- Product specs: `docs/product-specs/index.md`
-- Private implementation plans stay in `_private/plans/` on local machines and are not committed.
+## What Does Not Exist Yet
+- Datasheet-backed private benchmark suite.
+- Deep structured-output parsing from real `local_llm` providers.
+- Agent2 execution after handoff.

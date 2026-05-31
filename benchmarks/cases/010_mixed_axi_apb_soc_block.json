@@ -1,0 +1,7 @@
+{
+  "case_id": "010_mixed_axi_apb_soc_block",
+  "requirement": "Design a mixed AXI4/APB SoC block with 64-bit AXI4 data path, 32-bit APB CSR control plane, 128KB SRAM, interrupt/error registers, 400MHz target clock, synchronous reset.",
+  "expected_status": "PLAN_REVIEW",
+  "expected_topics": ["AXI4", "APB", "SRAM", "Interrupt", "400MHz"],
+  "mutation_tags": ["mixed_soc"]
+}

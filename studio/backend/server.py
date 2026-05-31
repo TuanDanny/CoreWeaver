@@ -13,6 +13,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
+from coreweaver.api import CoreWeaverRuntime
 from studio.backend.agent_service import AgentService
 from studio.backend.artifacts import preview_artifact
 from studio.backend.attachments import delete_staged_attachment, get_staged_attachments, stage_attachments
@@ -38,6 +39,12 @@ from studio.backend.runtime_tracking import (
 LOCAL_ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173"}
 LOCAL_ORIGIN_REGEX = r"^http://(localhost|127\.0\.0\.1):[0-9]+$"
 CREDENTIAL_HEALTH_VALUES = {"missing", "unchecked", "valid", "invalid"}
+
+def _core_runtime_capabilities() -> dict[str, Any]:
+    return CoreWeaverRuntime().capabilities()
+
+def _core_requires_credentials() -> bool:
+    return bool(_core_runtime_capabilities().get("requiresCredential"))
 
 
 class SettingsUpdate(BaseModel):
@@ -102,6 +109,7 @@ def _safe_ref(ref_id: str | None) -> str:
 
 def _settings_payload_with_health(app: FastAPI) -> dict[str, Any]:
     payload = public_settings_payload()
+    payload["coreRuntime"] = _core_runtime_capabilities()
     health: dict[str, str] = {}
     cached: dict[str, dict[str, Any]] = app.state.credential_health_by_ref
     for ref in payload.get("credentialRefs", []):
@@ -134,6 +142,8 @@ def _update_credential_health_from_probe(app: FastAPI, ref_id: str | None, resul
     _set_credential_health(app, ref_id, _status_from_probe_result(result), str(result.get("message") or ""))
 
 async def _preflight_credential(app: FastAPI, ref_id: str | None) -> None:
+    if not _core_requires_credentials():
+        return
     requested = _safe_ref(ref_id)
     key, _public_ref, error = resolve_credential_ref(requested)
     if error:

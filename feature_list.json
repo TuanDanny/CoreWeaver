@@ -1,0 +1,40 @@
+{
+  "version": "1.1.0",
+  "features": [
+    {
+      "id": "agent1.true_swarm.mock_profile",
+      "status": "implemented",
+      "summary": "Agent1 true swarm flow runs through mock_swarm without credentials."
+    },
+    {
+      "id": "agent1.true_swarm.local_llm_profile",
+      "status": "implemented",
+      "summary": "local_llm uses OpenAI-compatible model adapter through ModelRouter."
+    },
+    {
+      "id": "agent1.intake_clarification",
+      "status": "implemented",
+      "summary": "Classifies non-design, ambiguous, and design-ready requirements."
+    },
+    {
+      "id": "agent1.cluster_council",
+      "status": "implemented",
+      "summary": "Principal topology with 7 Middle managers and 24 Leaf experts."
+    },
+    {
+      "id": "agent1.signoff_handoff",
+      "status": "implemented",
+      "summary": "Architecture plan, signoff certificate, and Agent2 handoff gate artifacts."
+    },
+    {
+      "id": "agent1.benchmark_corpus",
+      "status": "implemented",
+      "summary": "20 public smoke/mutation benchmark cases execute through mock_swarm with schema validation and pass-rate reporting."
+    },
+    {
+      "id": "agent1.strict_done_hardening",
+      "status": "implemented",
+      "summary": "Public runtime entrypoint, Agent2 handoff validation, deterministic G00-G12 signoff, safety gates, replay bundle, and fake-client local_llm parsing are covered by tests."
+    }
+  ]
+}

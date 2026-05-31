@@ -8,12 +8,20 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from studio.backend.config import DEFAULT_CREDENTIAL_REF, ROOT
+from coreweaver.contracts import HandoffValidationError, validate_agent1_to_agent2_handoff
 from studio.backend.event_hub import EventHub
 from studio.backend.job_models import AgentJob, JobCreateRequest
 from studio.backend.job_queue import InProcessJobQueue, JobNotFound
 from studio.backend.run_manifest import OutputPolicyError
 from studio.backend.runner import RunnerManager
-from semiconductor_swarm.agents.agent2_rtl.rtl_designer import generate_rtl_files, verify_rtl_files
+try:
+    from semiconductor_swarm.agents.agent2_rtl.rtl_designer import generate_rtl_files, verify_rtl_files
+except ModuleNotFoundError:
+    def generate_rtl_files(spec: dict[str, Any], debug: bool = False) -> list[dict[str, Any]]:
+        raise RuntimeError("Agent2 RTL core is not connected. Rebuild core package before running agent2_rtl_draft.")
+
+    def verify_rtl_files(spec: dict[str, Any], rtl_files: list[dict[str, Any]]) -> dict[str, Any]:
+        raise RuntimeError("Agent2 RTL core is not connected. Rebuild core package before running agent2_rtl_draft.")
 
 CredentialPreflight = Callable[[str | None], Awaitable[None]]
 
@@ -250,12 +258,58 @@ class AgentService:
         output_dir = Path(job.output_dir)
         spec_path = self._find_agent1_to_agent2_contract(output_dir)
         if spec_path is None:
-            await self.queue.mark_status(job.job_id, "failed", error="agent1_to_agent2 contract is required before Agent 2 RTL draft")
+            message = "agent1_to_agent2 contract is required before Agent 2 RTL draft"
+            await self.publish_runner_event(
+                {
+                    "type": "debug_issue",
+                    "severity": "error",
+                    "source": "studio_backend",
+                    "code": "agent2_handoff_not_ready",
+                    "message": message,
+                    "details": {"job_id": job.job_id, "output_dir": str(output_dir)},
+                    "job_id": job.job_id,
+                }
+            )
+            await self.queue.mark_status(job.job_id, "failed", error=message)
             self._started_conditions.setdefault(job.job_id, asyncio.Event()).set()
             return
-        spec = json.loads(spec_path.read_text(encoding="utf-8"))
-        rtl_files = generate_rtl_files(spec, debug=True)
-        report = verify_rtl_files(spec, rtl_files)
+        try:
+            spec = validate_agent1_to_agent2_handoff(spec_path)
+        except HandoffValidationError as exc:
+            message = str(exc)
+            await self.publish_runner_event(
+                {
+                    "type": "debug_issue",
+                    "severity": "error",
+                    "source": "studio_backend",
+                    "code": "agent2_handoff_not_ready",
+                    "message": message,
+                    "details": {"job_id": job.job_id, "contract": str(spec_path)},
+                    "job_id": job.job_id,
+                }
+            )
+            await self.queue.mark_status(job.job_id, "failed", error=message)
+            self._started_conditions.setdefault(job.job_id, asyncio.Event()).set()
+            return
+        try:
+            rtl_files = generate_rtl_files(spec, debug=True)
+            report = verify_rtl_files(spec, rtl_files)
+        except RuntimeError as exc:
+            message = str(exc)
+            await self.publish_runner_event(
+                {
+                    "type": "debug_issue",
+                    "severity": "error",
+                    "source": "studio_backend",
+                    "code": "agent2_core_not_connected",
+                    "message": message,
+                    "details": {"job_id": job.job_id, "contract": str(spec_path)},
+                    "job_id": job.job_id,
+                }
+            )
+            await self.queue.mark_status(job.job_id, "failed", error=message)
+            self._started_conditions.setdefault(job.job_id, asyncio.Event()).set()
+            return
         artifact_refs = self._write_rtl_draft_artifacts(output_dir, rtl_files, report, spec_path, job.job_id)
         for artifact in artifact_refs[:8]:
             await self.publish_runner_event({"type": "artifact", "job_id": job.job_id, "path": artifact, "message": "agent2 RTL draft artifact"})

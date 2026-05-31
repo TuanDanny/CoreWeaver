@@ -11,9 +11,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from semiconductor_swarm.live_inputs import append_live_input
+from coreweaver.api import CoreWeaverRuntime
 from studio.backend.attachments import commit_staged_attachments
-from studio.backend.config import DEFAULT_CREDENTIAL_REF, ROOT, redact_secret_text, resolve_credential_ref
+from studio.backend.config import DEFAULT_CREDENTIAL_REF, ROOT, load_settings, redact_secret_text, resolve_credential_ref
 from studio.backend.run_manifest import (
     OutputPolicyError,
     append_lineage,
@@ -23,7 +23,28 @@ from studio.backend.run_manifest import (
     write_manifest,
 )
 from studio.backend.runtime_tracking import RuntimeTracker
-from semiconductor_swarm.tracing import TRACE_FILES, trace_event
+try:
+    from semiconductor_swarm.live_inputs import append_live_input
+    from semiconductor_swarm.tracing import TRACE_FILES, trace_event
+except ModuleNotFoundError:
+    TRACE_FILES = {"studio_flow": "studio_flow", "runner_process": "runner_process"}
+
+    def trace_event(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    def append_live_input(
+        output_dir: str,
+        *,
+        message: str,
+        run_id: str,
+        client_message_id: str,
+    ) -> dict[str, str]:
+        return {
+            "message_id": client_message_id or "core-skeleton-live-input",
+            "message_hash": "core-skeleton",
+            "run_id": run_id,
+            "message": message,
+        }
 
 EventSink = Callable[[dict[str, Any]], Awaitable[None]]
 CommandBuilder = Callable[[str, dict[str, Any]], list[str]]
@@ -59,7 +80,49 @@ CRITICAL_EVENT_TYPES = {
     "agent1_clarification_question",
     "agent1_clarification_answer",
     "agent1_council_mode_selected",
+    "intake_started",
+    "intake_done",
+    "intake_failed",
+    "classification_done",
+    "agent1_plan_dag_created",
+    "agent1_plan_dag_validated",
+    "agent1_plan_dag_failed",
+    "agent1_plan_node_start",
+    "agent1_plan_node_done",
+    "agent1_plan_node_failed",
+    "agent1_plan_node_replanned",
+    "agent1_model_route_selected",
+    "agent1_model_route_escalated",
+    "agent1_tool_call_start",
+    "agent1_tool_call_done",
+    "agent1_tool_call_failed",
+    "agent1_tool_call_retry",
+    "agent1_budget_check_pass",
+    "agent1_budget_check_warn",
+    "agent1_budget_check_throttle",
+    "agent1_budget_check_kill",
+    "agent1_kill_switch_checked",
+    "agent1_kill_switch_tripped",
+    "agent1_circuit_breaker_closed",
+    "agent1_circuit_breaker_open",
+    "agent1_circuit_breaker_half_open",
+    "agent1_canary_touched",
+    "agent1_proposal_created",
+    "agent1_proposal_approved",
+    "agent1_proposal_rejected",
+    "agent1_proposal_committed",
+    "agent1_rollback_point_created",
+    "agent1_rollback_point_restored",
+    "agent1_blackboard_write",
+    "agent1_signoff_gate_start",
+    "agent1_signoff_gate_done",
+    "agent1_signoff_gate_failed",
+    "agent1_handoff_ready",
+    "agent1_handoff_blocked",
 }
+
+def _core_requires_credentials() -> bool:
+    return bool(CoreWeaverRuntime().capabilities().get("requiresCredential"))
 
 
 @dataclass
@@ -528,13 +591,19 @@ class RunnerManager:
     async def _launch(self, command_name: str, payload: dict[str, Any]) -> None:
         command = self.command_builder(command_name, payload)
         env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+        src_path = str(self.root / "src")
+        env["PYTHONPATH"] = src_path + os.pathsep + env.get("PYTHONPATH", "")
         key_ref = str(payload.get("api_key_ref") or payload.get("apiKeyRef") or self.state.api_key_ref or DEFAULT_CREDENTIAL_REF)
-        if self._uses_default_command:
+        if self._uses_default_command and _core_requires_credentials():
+            settings = load_settings()
+            env["COREWEAVER_MODEL_ENDPOINT"] = settings.endpoint
+            env["COREWEAVER_MODEL"] = settings.model
             secret, _public_ref, error = resolve_credential_ref(key_ref)
             if error:
                 await self._emit({"type": "error", "message": "Missing credential ref secret", "credential_ref": key_ref}, run_id=self.state.run_id)
                 raise RuntimeError(error)
             if secret:
+                env["COREWEAVER_API_KEY"] = secret
                 env["SWARM_CODEX_API_KEY"] = secret
                 env["AGENT1_CODEX_API_KEY"] = secret
                 env["AGENT2_CODEX_API_KEY"] = secret
@@ -571,7 +640,7 @@ class RunnerManager:
         ]
 
     def _default_command(self, command_name: str, payload: dict[str, Any]) -> list[str]:
-        runner = self.root / "app" / "swarm_runner.py"
+        runner_path = self.root / "src" / "coreweaver" / "studio_runner.py"
         project = str(payload.get("project_name") or self.state.project_name or "swarm_soc")
         output_dir = str(payload.get("output_dir") or self.state.output_dir or self.root / "outputs" / "studio_runs" / project)
         checkpoint_db = str(
@@ -587,7 +656,7 @@ class RunnerManager:
         self.state.thread_id = thread_id
         args = [
             sys.executable,
-            str(runner),
+            str(runner_path),
             command_name,
             "--project-name",
             project,
@@ -605,6 +674,9 @@ class RunnerManager:
         attachment_manifest = str(payload.get("attachment_manifest") or self.state.attachment_manifest_path or "")
         if attachment_manifest:
             args.extend(["--attachment-manifest", attachment_manifest])
+        attachment_context = str(payload.get("attachment_context") or self.state.attachment_context_path or "")
+        if attachment_context:
+            args.extend(["--attachment-context", attachment_context])
         if command_name == "start":
             args.extend(["--requirement", str(payload.get("requirement") or self.state.requirement)])
         else:

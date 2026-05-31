@@ -1,0 +1,7 @@
+{
+  "case_id": "008_uart_basic",
+  "requirement": "Design a UART peripheral on APB with 32-bit control/status registers, TX/RX FIFOs, interrupt status W1C, 100MHz clock, synchronous reset.",
+  "expected_status": "PLAN_REVIEW",
+  "expected_topics": ["APB", "CSR", "Interrupt", "100MHz"],
+  "mutation_tags": ["uart_basic"]
+}

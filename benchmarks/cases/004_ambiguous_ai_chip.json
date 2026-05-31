@@ -1,0 +1,7 @@
+{
+  "case_id": "004_ambiguous_ai_chip",
+  "requirement": "Design an AI chip.",
+  "expected_status": "REQUIREMENT_CLARIFICATION",
+  "expected_topics": ["bus/interface contract", "target clock/frequency", "memory/register map"],
+  "mutation_tags": ["ambiguous_input"]
+}
