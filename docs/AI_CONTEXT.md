@@ -1,5 +1,11 @@
 # AI Context Contract
 
+## Context Metadata
+- Last updated: 2026-05-31
+- Scope: durable project context, not task-specific scratchpad
+- Task-specific state belongs in `session-handoff.md`
+- Long-term milestone state belongs in `progress.md`
+
 This file is the durable context entrypoint for future Codex and AI sessions.
 Read it before changing code, then continue with the required files listed in
 `AGENTS.md`.
@@ -46,6 +52,20 @@ Read it before changing code, then continue with the required files listed in
 - Early pause paths have less replay detail than full signoff/conflict paths.
 - Handoff and verifier quality can still be deepened around evidence completeness, schema strictness, and branch-level tracking.
 - Benchmark scoring is public-safe and deterministic, but not a substitute for private design-quality review.
+
+## Context Freshness Rules
+- Update this file only when architecture baseline, active direction, non-negotiable rules, known gaps, or review entrypoints change.
+- Do not dump logs, temporary debugging notes, or one-off task details here.
+- Put current task state in `session-handoff.md`.
+- Put milestone/project progress in `progress.md`.
+- If this file disagrees with `AGENTS.md`, `ARCHITECTURE.md`, or `docs/HARNESS_ENGINEERING.md`, stop and ask for clarification.
+
+## Session Start Checklist
+1. Confirm current branch is not `main` for feature work.
+2. Read required files listed above.
+3. Identify the task scope before editing.
+4. Check `session-handoff.md` for previous unfinished work.
+5. Keep changes focused enough for a reviewable PR.
 
 ## Review Entrypoints
 - Public API: `src/coreweaver/api.py`
