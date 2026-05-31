@@ -15,7 +15,29 @@ CoreWeaver converts semiconductor requirements into architecture contracts throu
 - Agent2 handoff is blocked until Agent1 contracts and signoff gates pass.
 - Framework-first rule: build/maintain typed messages, async events, hooks, bounded loop, scheduler, adapters, safety, replay, and Studio skeleton before adding Agent1 reasoning.
 
+## Required Context Loading
+Before code changes, Codex must read these files in this order:
+- `docs/AI_CONTEXT.md`
+- `AGENTS.md`
+- `ARCHITECTURE.md`
+- `docs/HARNESS_ENGINEERING.md`
+- `docs/REPO_MAP.md`
+- `progress.md`
+- `session-handoff.md`
+
+If a task changes harness or agent behavior, also read `.rules/` before editing.
+
+## Mandatory Git Workflow
+- Never do feature work directly on `main`.
+- Use a `codex/*` branch for Codex work.
+- Update `session-handoff.md` for every task with goal, branch, files changed, tests run, risks, and reviewer notes.
+- Run `python -m pytest -q tests` and `python scripts/harness_check.py --json` before finishing.
+- Push the branch and create a pull request for review.
+- Never merge a pull request unless a human explicitly asks.
+
 ## Read Map
+- AI context contract: `docs/AI_CONTEXT.md`
+- Repo map: `docs/REPO_MAP.md`
 - Harness architecture: `ARCHITECTURE.md`
 - Harness doctrine: `docs/HARNESS_ENGINEERING.md`
 - Harness code: `src/coreweaver/harness/`
