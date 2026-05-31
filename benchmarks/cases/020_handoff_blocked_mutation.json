@@ -1,0 +1,7 @@
+{
+  "case_id": "020_handoff_blocked_mutation",
+  "requirement": "Design an AXI4/APB secure accelerator with 64KB SRAM, 300MHz clock, synchronous reset, AES key protection, and FORCE_M06_M07_CONFLICT.",
+  "expected_status": "CONFLICT_REQUIRED",
+  "expected_topics": ["Forced test conflict", "CONFLICT_REQUIRED"],
+  "mutation_tags": ["handoff_with_blockers"]
+}

@@ -1,0 +1,7 @@
+{
+  "case_id": "014_fake_ppa_estimate_mutation",
+  "requirement": "Design an APB timer peripheral with 32-bit CSRs, interrupt status W1C, 100MHz clock, synchronous reset, and FAKE_PPA_ESTIMATE_MUTATION.",
+  "expected_status": "HITL_REQUIRED",
+  "expected_topics": ["ppa_risk_missing", "agent1_handoff_blocked"],
+  "mutation_tags": ["fake_ppa_estimate"]
+}

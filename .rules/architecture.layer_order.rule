@@ -1,0 +1,15 @@
+{
+  "id": "architecture.layer_order",
+  "version": "1.0.0",
+  "severity": "error",
+  "description": "Architecture layer or cross-domain violations must be resolved before core work continues.",
+  "applies_to": "architecture",
+  "when": {
+    "architecture_violation_exists": {}
+  },
+  "then": {
+    "block": {
+      "action": "core_merge"
+    }
+  }
+}

@@ -5,11 +5,18 @@ cd /d "%~dp0\.."
 set BACKEND_PORT=8000
 set FRONTEND_PORT=5173
 set PYTHON_EXE=.venv_dv\Scripts\python.exe
+set PYTHONPATH=%CD%\src;%PYTHONPATH%
 
-if not exist "%PYTHON_EXE%" (
-  echo Missing %PYTHON_EXE%
+if exist "%PYTHON_EXE%" goto PYTHON_READY
+
+where python >nul 2>nul
+if errorlevel 1 (
+  echo Missing .venv_dv\Scripts\python.exe and python is not available on PATH
   exit /b 1
 )
+set PYTHON_EXE=python
+
+:PYTHON_READY
 
 call :CHECK_PORTS
 if errorlevel 1 exit /b 1

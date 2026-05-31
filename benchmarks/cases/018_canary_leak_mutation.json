@@ -1,0 +1,7 @@
+{
+  "case_id": "018_canary_leak_mutation",
+  "requirement": "Design an APB timer peripheral with 32-bit CSRs, interrupt status W1C, 100MHz clock, synchronous reset, and CANARY_LEAK_MUTATION.",
+  "expected_status": "HITL_REQUIRED",
+  "expected_topics": ["canary_touched", "quarantine"],
+  "mutation_tags": ["canary_leak"]
+}

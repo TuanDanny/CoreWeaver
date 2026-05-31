@@ -1,0 +1,7 @@
+{
+  "case_id": "016_kill_switch_mutation",
+  "requirement": "Design an APB timer peripheral with 32-bit CSRs, interrupt status W1C, 100MHz clock, synchronous reset, and KILL_SWITCH_MUTATION.",
+  "expected_status": "HITL_REQUIRED",
+  "expected_topics": ["kill_switch_tripped", "agent1_kill_switch_tripped"],
+  "mutation_tags": ["kill_switch"]
+}

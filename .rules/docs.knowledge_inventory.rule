@@ -1,0 +1,15 @@
+{
+  "id": "docs.knowledge_inventory",
+  "version": "1.0.0",
+  "severity": "error",
+  "description": "Harness knowledge inventory must remain complete and linked.",
+  "applies_to": "docs",
+  "when": {
+    "knowledge_inventory_missing": {}
+  },
+  "then": {
+    "block": {
+      "action": "harness_release"
+    }
+  }
+}

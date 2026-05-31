@@ -240,6 +240,10 @@ export type SettingsPayload = {
   activeKeyRef: string;
   credentialRefs: CredentialRef[];
   credentialHealth: Record<string, CredentialHealth>;
+  coreRuntime?: {
+    runtimeKind?: string;
+    requiresCredential?: boolean;
+  };
   modelProviders?: Array<{ id: string; label: string; enabled: boolean; kind: string }>;
 };
 

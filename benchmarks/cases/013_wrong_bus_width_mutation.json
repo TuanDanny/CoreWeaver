@@ -1,0 +1,7 @@
+{
+  "case_id": "013_wrong_bus_width_mutation",
+  "requirement": "Design an AXI4/APB accelerator with 64-bit AXI4 data path, 32-bit APB CSRs, SRAM buffer, interrupt status, 300MHz clock, synchronous reset, and WRONG_BUS_WIDTH_MUTATION.",
+  "expected_status": "HITL_REQUIRED",
+  "expected_topics": ["bus_width_conflict", "agent1_handoff_blocked"],
+  "mutation_tags": ["wrong_bus_width"]
+}

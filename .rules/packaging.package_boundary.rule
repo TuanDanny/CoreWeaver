@@ -1,0 +1,15 @@
+{
+  "id": "packaging.package_boundary",
+  "version": "1.0.0",
+  "severity": "error",
+  "description": "Core, harness, agents, tools, benchmarks, and adapters must stay package-shaped for isolated debugging and future extension.",
+  "applies_to": "packaging",
+  "when": {
+    "knowledge_inventory_missing": {}
+  },
+  "then": {
+    "block": {
+      "action": "core_package_merge"
+    }
+  }
+}

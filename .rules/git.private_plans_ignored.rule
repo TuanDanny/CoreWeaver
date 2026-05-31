@@ -1,0 +1,17 @@
+{
+  "id": "git.private_plans_ignored",
+  "version": "1.0.0",
+  "severity": "blocker",
+  "description": "Private plans must stay ignored by Git.",
+  "applies_to": "git",
+  "when": {
+    "git_ignore_missing": {
+      "path": "_private/plans/COREWEAVER_AGENT_V1_1_0_TRUE_SWARM_REBUILD_PLAN.md"
+    }
+  },
+  "then": {
+    "block": {
+      "action": "public_push"
+    }
+  }
+}

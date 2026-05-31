@@ -1,15 +1,12 @@
----
-title: Design Docs Index
-status: active
-owner: docs-governance
-type: design-doc
-last_reviewed: 2026-05-17
-source_of_truth: true
----
-
 # Design Docs Index
 
-Stable contracts and long-lived design beliefs.
+Stable design records for the clean CoreWeaver rebuild.
 
-- `core-beliefs.md`
-- `repo-knowledge-store.md`
+## Current Records
+- `ARCHITECTURE.md`: harness architecture and layer boundaries.
+- `docs/HARNESS_ENGINEERING.md`: harness doctrine.
+- `docs/adr/`: architecture decision records.
+- `docs/design-docs/studio-agent1-core-contract.md`: Studio to Agent1 plug-in contract.
+
+## Rule
+Design docs describe stable decisions. Work plans stay in `_private/plans/`.

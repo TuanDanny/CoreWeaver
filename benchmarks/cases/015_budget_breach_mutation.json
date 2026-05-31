@@ -1,0 +1,7 @@
+{
+  "case_id": "015_budget_breach_mutation",
+  "requirement": "Design an APB timer peripheral with 32-bit CSRs, interrupt status W1C, 100MHz clock, synchronous reset, and BUDGET_BREACH_MUTATION.",
+  "expected_status": "HITL_REQUIRED",
+  "expected_topics": ["budget_exceeded", "agent1_budget_check_kill"],
+  "mutation_tags": ["cost_budget_breach"]
+}

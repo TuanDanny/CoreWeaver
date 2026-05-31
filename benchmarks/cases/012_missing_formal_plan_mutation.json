@@ -1,0 +1,7 @@
+{
+  "case_id": "012_missing_formal_plan_mutation",
+  "requirement": "Design an AXI4/APB DMA block with 64-bit AXI4, APB CSRs, 64KB SRAM, interrupt status, 250MHz clock, synchronous reset, and MISSING_FORMAL_PLAN_MUTATION.",
+  "expected_status": "HITL_REQUIRED",
+  "expected_topics": ["formal_mutation_detected", "agent1_handoff_blocked"],
+  "mutation_tags": ["missing_formal_plan"]
+}

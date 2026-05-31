@@ -1,0 +1,7 @@
+{
+  "case_id": "005_non_design_chat",
+  "requirement": "Bạn là ai?",
+  "expected_status": "NON_DESIGN_CONVERSATION",
+  "expected_topics": ["non-design conversation"],
+  "mutation_tags": ["non_design"]
+}

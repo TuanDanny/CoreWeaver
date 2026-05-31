@@ -1,0 +1,23 @@
+{
+  "id": "debug.required_trace_fields",
+  "version": "1.0.0",
+  "severity": "error",
+  "description": "Trace events must keep the minimum fields needed for replay and debugging.",
+  "applies_to": "debug",
+  "when": {
+    "missing_required_event_field": {
+      "fields": [
+        "event_type",
+        "run_id",
+        "revision_id",
+        "span_id",
+        "timestamp"
+      ]
+    }
+  },
+  "then": {
+    "emit_issue": {
+      "code": "missing_required_trace_field"
+    }
+  }
+}

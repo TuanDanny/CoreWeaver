@@ -1,0 +1,17 @@
+{
+  "id": "handoff.no_agent2_on_blocker",
+  "version": "1.0.0",
+  "severity": "blocker",
+  "description": "Agent2 handoff is forbidden while blocker issues remain.",
+  "applies_to": "handoff",
+  "when": {
+    "any_debug_issue": {
+      "severity": "blocker"
+    }
+  },
+  "then": {
+    "block": {
+      "action": "agent2_handoff"
+    }
+  }
+}

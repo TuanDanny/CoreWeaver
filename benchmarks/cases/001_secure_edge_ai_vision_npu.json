@@ -1,0 +1,7 @@
+{
+  "case_id": "001_secure_edge_ai_vision_npu",
+  "requirement": "Design a Secure Edge AI Vision NPU with 64-bit AXI4 image DMA, 32-bit APB firmware CSRs, MAC array, 64KB SRAM buffer, AES-256 on-the-fly weight decrypt, software-programmable write-only key locked after boot with no readback, 500MHz target, and <2W power budget.",
+  "expected_status": "PLAN_REVIEW",
+  "expected_topics": ["AXI4", "APB", "64KB", "AES-256", "WO", "lock-after-boot", "500MHz", "Power budget"],
+  "mutation_tags": ["secure_key_policy", "mixed_bus", "ppa_risk"]
+}

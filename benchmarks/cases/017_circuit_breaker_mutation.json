@@ -1,0 +1,7 @@
+{
+  "case_id": "017_circuit_breaker_mutation",
+  "requirement": "Design an APB timer peripheral with 32-bit CSRs, interrupt status W1C, 100MHz clock, synchronous reset, and CIRCUIT_BREAKER_MUTATION.",
+  "expected_status": "HITL_REQUIRED",
+  "expected_topics": ["circuit_breaker_open", "agent1_circuit_breaker_open"],
+  "mutation_tags": ["circuit_breaker"]
+}
