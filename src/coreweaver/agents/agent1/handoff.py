@@ -12,7 +12,10 @@ class Agent2HandoffGate:
             architecture_plan_ref=plan_ref,
             signoff_certificate_ref=certificate_ref,
             locked_interfaces=plan.interfaces,
+            locked_memory_map=plan.memory_map,
             locked_registers=plan.registers,
+            locked_reset_clock_cdc=plan.reset_clock_cdc,
+            signoff_gate_results=certificate.gate_results,
             blockers=blockers,
             trace_refs=plan.provenance_refs,
         )
