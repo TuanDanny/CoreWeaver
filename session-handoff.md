@@ -31,3 +31,11 @@ powershell -ExecutionPolicy Bypass -File scripts/dev_check.ps1
 - Strengthen live-endpoint `local_llm` evaluation beyond fake-client structured-output tests.
 - Add more datasheet-backed benchmark cases when source material exists.
 - Improve Studio visualizations for new `agent1_*` event types if needed.
+
+## Latest Task
+- Goal: add durable AI context contract for future Codex sessions.
+- Branch: `codex/add-ai-context-contract`.
+- Files changed: `docs/AI_CONTEXT.md`, `docs/REPO_MAP.md`, `AGENTS.md`, `scripts/start_codex_task.ps1`, `scripts/finish_codex_task.ps1`, `session-handoff.md`.
+- Tests run: `python -m pytest -q tests`; `python scripts/harness_check.py --json`.
+- Risks: documentation can drift if future behavior changes do not update context files; `finish_codex_task.ps1` now guards this for protected project areas.
+- Reviewer notes: no Agent1 or Agent2 runtime behavior should change in this task.
