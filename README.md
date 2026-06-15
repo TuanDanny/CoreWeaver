@@ -1,9 +1,39 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://capsule-render.vercel.app/api?type=waving&height=180&color=0:0B1220,45:174EA6,100:00C2A8&text=CoreWeaver&fontColor=FFFFFF&fontAlignY=36&fontSize=54&desc=Agent-first%20semiconductor%20architecture%20harness&descAlignY=58&descSize=16">
-  <img alt="CoreWeaver banner" src="https://capsule-render.vercel.app/api?type=waving&height=180&color=0:F8FAFC,45:BFDBFE,100:A7F3D0&text=CoreWeaver&fontColor=0B1220&fontAlignY=36&fontSize=54&desc=Agent-first%20semiconductor%20architecture%20harness&descAlignY=58&descSize=16">
-</picture>
+<br>
+
+<h1>CoreWeaver</h1>
+
+<h3>Agent-first silicon architecture harness</h3>
+
+<p>
+  <strong>Requirements</strong>
+  &nbsp;->&nbsp;
+  <strong>Architecture Contracts</strong>
+  &nbsp;->&nbsp;
+  <strong>Trace</strong>
+  &nbsp;->&nbsp;
+  <strong>G00-G12 Signoff</strong>
+  &nbsp;->&nbsp;
+  <strong>Agent2 Handoff Gate</strong>
+</p>
+
+<p>
+  <img alt="silicon contracts" src="https://img.shields.io/badge/Silicon-Architecture%20Contracts-0F766E?style=for-the-badge">
+  <img alt="trace replay" src="https://img.shields.io/badge/Trace-Replayable-2563EB?style=for-the-badge">
+  <img alt="signoff gates" src="https://img.shields.io/badge/Signoff-G00--G12-F59E0B?style=for-the-badge">
+  <img alt="handoff gate" src="https://img.shields.io/badge/Handoff-Gate%20Checked-7C3AED?style=for-the-badge">
+</p>
+
+<table>
+  <tr>
+    <td align="center"><strong>Requirement</strong><br><sub>semiconductor intent</sub></td>
+    <td align="center"><strong>Agent1 Swarm</strong><br><sub>principal, managers, experts</sub></td>
+    <td align="center"><strong>Evidence</strong><br><sub>trace, replay, report</sub></td>
+    <td align="center"><strong>Signoff</strong><br><sub>G00-G12 gates</sub></td>
+    <td align="center"><strong>Contract</strong><br><sub>typed Agent2 handoff</sub></td>
+  </tr>
+</table>
 
 [![Harness](https://img.shields.io/github/actions/workflow/status/TuanDanny/CoreWeaver/harness.yml?branch=main&style=for-the-badge&label=Harness&logo=githubactions&logoColor=white)](https://github.com/TuanDanny/CoreWeaver/actions/workflows/harness.yml)
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=for-the-badge&logo=python&logoColor=white)
