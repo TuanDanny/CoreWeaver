@@ -14,7 +14,7 @@ DEFAULT_CHECKPOINT_DB = ROOT / ".swarm" / "studio_web_checkpoints.sqlite"
 DEFAULT_OUTPUT_ROOT = ROOT / "outputs" / "studio_runs"
 API_KEY_PLACEHOLDER = "********"
 DEFAULT_CREDENTIAL_REF = "owner"
-OWNER_KEY_ENV_VARS = ("SWARM_CODEX_API_KEY", "AGENT1_CODEX_API_KEY")
+OWNER_KEY_ENV_VARS = ("SWARM_CODEX_API_KEY", "AGENT1_CODEX_API_KEY", "GEMINI_API_KEY")
 
 
 @dataclass(frozen=True)

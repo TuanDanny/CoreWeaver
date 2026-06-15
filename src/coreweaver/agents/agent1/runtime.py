@@ -9,6 +9,7 @@ from coreweaver.framework_types import make_idempotency_key, stable_hash
 from coreweaver.messages import Blackboard, CoreMessage, MessageKind, MessageRole
 from coreweaver.models import ModelRouter
 from coreweaver.safety import CanaryFinding, CircuitBreakerState, CostBudget, CostUsage, KillSwitchState
+from coreweaver.debug import build_replay_resume_state
 
 from .challenge import ChallengeMatrix
 from .handoff import Agent2HandoffGate
@@ -392,7 +393,10 @@ class Agent1SwarmRuntime:
         checkpoint_dir = output_dir / "checkpoints"
         if checkpoint_dir.exists():
             for path in sorted(checkpoint_dir.glob("*.json")):
-                checkpoints.append(json.loads(path.read_text(encoding="utf-8")))
+                checkpoint = json.loads(path.read_text(encoding="utf-8"))
+                checkpoint["checkpoint_ref"] = f"checkpoints/{path.name}"
+                checkpoint["checkpoint_hash"] = stable_hash(checkpoint)
+                checkpoints.append(checkpoint)
         signoff_path = output_dir / "reports" / "agent1" / "agent1_final_signoff_certificate.json"
         handoff_path = output_dir / "contracts" / "agent1_to_agent2.json"
         bundle = {
@@ -405,4 +409,5 @@ class Agent1SwarmRuntime:
             "signoff": json.loads(signoff_path.read_text(encoding="utf-8")) if signoff_path.exists() else None,
             "handoff": json.loads(handoff_path.read_text(encoding="utf-8")) if handoff_path.exists() else None,
         }
+        bundle["resume"] = build_replay_resume_state(bundle).model_dump(mode="json")
         self._write_json(replay_dir / "replay_bundle.json", bundle)

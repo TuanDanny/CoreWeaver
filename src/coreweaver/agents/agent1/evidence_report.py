@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import Field, ValidationError
 
 from coreweaver.contracts import HandoffValidationError, validate_agent1_to_agent2_handoff
+from coreweaver.debug import validate_replay_resume_state, validate_trace_replay_consistency
 from coreweaver.framework_types import StrictCoreModel
 
 from .models import ChallengeSeverity, SignoffCertificate
@@ -54,6 +55,23 @@ class ReplaySummary(StrictCoreModel):
     has_handoff: bool
 
 
+class ReplayResumeSummary(StrictCoreModel):
+    passed: bool
+    latest_stage: str = "unknown"
+    latest_checkpoint_ref: str = "unknown"
+    action_required: str | None = None
+    blackboard_revision: int | None = None
+    reconstructable: bool = False
+    errors: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
+class TraceValidationSummary(StrictCoreModel):
+    passed: bool
+    errors: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
 class Agent1EvidenceReport(StrictCoreModel):
     schema_version: str = "coreweaver.agent1.evidence_report.v1"
     run_id: str
@@ -74,6 +92,8 @@ class Agent1EvidenceReport(StrictCoreModel):
     verdict: str
     trace_summary: TraceSummary
     replay_summary: ReplaySummary
+    replay_resume: ReplayResumeSummary
+    trace_validation: TraceValidationSummary
 
 
 def generate_agent1_evidence_report(
@@ -120,13 +140,15 @@ def generate_agent1_evidence_report(
     handoff_ready = _validate_handoff(handoff_path, blockers, missing_evidence)
 
     replay_summary = _summarize_replay(replay, blockers, warnings, missing_evidence)
+    replay_resume = _validate_replay_resume(replay, blockers, warnings, missing_evidence)
+    trace_validation = _validate_trace_replay(events, replay, blockers, warnings, missing_evidence)
     trace_summary = TraceSummary(
         event_count=len(events),
         missing_required_fields=tuple(sorted(set(trace_missing_fields))),
         artifact_ref_count=len(artifact_refs),
         terminal_events=tuple(_terminal_events(events)),
     )
-    debug_score = _debug_score(trace_path, replay_path, trace_missing_fields, replay_summary, missing_artifact_refs)
+    debug_score = _debug_score(trace_path, replay_path, trace_missing_fields, replay_summary, replay_resume, missing_artifact_refs, trace_validation)
     readiness_score = _readiness_score(signoff, handoff_ready)
     verdict = "ready" if readiness_score == 100 and debug_score == 100 and not blockers and not missing_evidence else "not_ready"
 
@@ -161,6 +183,8 @@ def generate_agent1_evidence_report(
         verdict=verdict,
         trace_summary=trace_summary,
         replay_summary=replay_summary,
+        replay_resume=replay_resume,
+        trace_validation=trace_validation,
     )
     if write:
         report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -224,6 +248,11 @@ def render_agent1_evidence_markdown(report: Agent1EvidenceReport) -> str:
             f"- Missing required fields: `{', '.join(report.trace_summary.missing_required_fields) if report.trace_summary.missing_required_fields else 'none'}`",
             f"- Terminal events: `{', '.join(report.trace_summary.terminal_events) if report.trace_summary.terminal_events else 'none'}`",
             "",
+            "## Trace Validation",
+            f"- Passed: `{str(report.trace_validation.passed).lower()}`",
+            f"- Errors: `{', '.join(report.trace_validation.errors) if report.trace_validation.errors else 'none'}`",
+            f"- Warnings: `{', '.join(report.trace_validation.warnings) if report.trace_validation.warnings else 'none'}`",
+            "",
             "## Replay Summary",
             f"- Event count: `{report.replay_summary.event_count}`",
             f"- Checkpoint count: `{report.replay_summary.checkpoint_count}`",
@@ -231,6 +260,16 @@ def render_agent1_evidence_markdown(report: Agent1EvidenceReport) -> str:
             f"- Has blackboard snapshot: `{str(report.replay_summary.has_blackboard_snapshot).lower()}`",
             f"- Has signoff: `{str(report.replay_summary.has_signoff).lower()}`",
             f"- Has handoff: `{str(report.replay_summary.has_handoff).lower()}`",
+            "",
+            "## Replay Resume",
+            f"- Passed: `{str(report.replay_resume.passed).lower()}`",
+            f"- Latest stage: `{report.replay_resume.latest_stage}`",
+            f"- Latest checkpoint: `{report.replay_resume.latest_checkpoint_ref}`",
+            f"- Action required: `{report.replay_resume.action_required or 'none'}`",
+            f"- Blackboard revision: `{report.replay_resume.blackboard_revision if report.replay_resume.blackboard_revision is not None else 'none'}`",
+            f"- Reconstructable: `{str(report.replay_resume.reconstructable).lower()}`",
+            f"- Errors: `{', '.join(report.replay_resume.errors) if report.replay_resume.errors else 'none'}`",
+            f"- Warnings: `{', '.join(report.replay_resume.warnings) if report.replay_resume.warnings else 'none'}`",
             "",
             "## Reviewer Note",
             _reviewer_note(report),
@@ -353,7 +392,7 @@ def _summarize_replay(
     checkpoints = replay.get("checkpoints") if isinstance(replay.get("checkpoints"), list) else []
     debug_issues = replay.get("debug_issues") if isinstance(replay.get("debug_issues"), list) else []
     if replay:
-        for field in ("schema_version", "run_id", "events", "checkpoints", "debug_issues", "signoff", "handoff"):
+        for field in ("schema_version", "run_id", "events", "checkpoints", "debug_issues", "signoff", "handoff", "resume"):
             if field not in replay:
                 blockers.append(f"replay_missing_field:{field}")
                 missing.append(f"replay:{field}")
@@ -368,6 +407,51 @@ def _summarize_replay(
         has_blackboard_snapshot=replay.get("blackboard_snapshot") is not None,
         has_signoff=replay.get("signoff") is not None,
         has_handoff=replay.get("handoff") is not None,
+    )
+
+
+def _validate_replay_resume(
+    replay: dict[str, Any],
+    blockers: list[str],
+    warnings: list[str],
+    missing: list[str],
+) -> ReplayResumeSummary:
+    result = validate_replay_resume_state(replay)
+    for error in result.errors:
+        blockers.append(f"replay_resume:{error}")
+        missing.append(f"replay_resume:{error}")
+    for warning in result.warnings:
+        warnings.append(f"replay_resume:{warning}")
+    state = result.resume_state
+    return ReplayResumeSummary(
+        passed=result.passed,
+        latest_stage=state.latest_stage if state else "unknown",
+        latest_checkpoint_ref=state.latest_checkpoint_ref if state else "unknown",
+        action_required=state.action_required if state else None,
+        blackboard_revision=state.blackboard_revision if state else None,
+        reconstructable=state.reconstructable if state else False,
+        errors=result.errors,
+        warnings=result.warnings,
+    )
+
+
+def _validate_trace_replay(
+    events: list[dict[str, Any]],
+    replay: dict[str, Any],
+    blockers: list[str],
+    warnings: list[str],
+    missing: list[str],
+) -> TraceValidationSummary:
+    result = validate_trace_replay_consistency(events, replay)
+    for error in result.errors:
+        blockers.append(f"trace_validation:{error}")
+        missing.append(f"trace_validation:{error}")
+    for warning in result.warnings:
+        warnings.append(f"trace_validation:{warning}")
+    return TraceValidationSummary(
+        passed=result.passed,
+        errors=result.errors,
+        warnings=result.warnings,
     )
 
 
@@ -453,7 +537,9 @@ def _debug_score(
     replay_path: Path,
     trace_missing_fields: tuple[str, ...],
     replay_summary: ReplaySummary,
+    replay_resume: ReplayResumeSummary,
     missing_artifact_refs: tuple[str, ...],
+    trace_validation: TraceValidationSummary,
 ) -> int:
     checks = (
         trace_path.exists(),
@@ -461,7 +547,9 @@ def _debug_score(
         trace_path.exists() and not trace_missing_fields,
         replay_summary.event_count > 0,
         replay_summary.checkpoint_count > 0,
+        replay_resume.passed,
         trace_path.exists() and not missing_artifact_refs,
+        trace_validation.passed,
     )
     return round(100 * sum(1 for item in checks if item) / len(checks))
 

@@ -48,8 +48,8 @@ Read it before changing code, then continue with the required files listed in
 - Live `local_llm` provider quality is not certified beyond fake-client structured-output tests.
 - Datasheet-backed private benchmark cases are not in the public corpus.
 - Agent2 RTL core execution remains outside the current strict-done scope.
-- Resume-from-checkpoint is weaker than replay artifact generation.
-- Early pause paths have less replay detail than full signoff/conflict paths.
+- Replay bundles include a typed resume state for latest checkpoint reconstruction; executable resume now supports safe pause continuations such as plan approval and clarification reruns.
+- Arbitrary mid-run resume-from-checkpoint is still future work, and early pause replay depth remains thinner than full signoff/conflict paths.
 - Handoff and verifier quality can still be deepened around evidence completeness, schema strictness, and branch-level tracking.
 - Benchmark scoring is public-safe and deterministic, but not a substitute for private design-quality review.
 

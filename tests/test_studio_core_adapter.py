@@ -170,6 +170,29 @@ def test_studio_runner_uses_coreweaver_module() -> None:
     assert "--attachment-context" in command
 
 
+def test_studio_runner_resume_command_preserves_requirement_and_action() -> None:
+    from studio.backend.runner import RunnerManager
+
+    manager = RunnerManager()
+    manager.state.requirement = "Design an AI chip."
+    command = manager._default_command(
+        "resume",
+        {
+            "project_name": "p",
+            "run_id": "run1",
+            "thread_id": "thread1",
+            "output_dir": "runs/run1",
+            "resume_action": "REQUIREMENT_CLARIFICATION",
+            "notes": "Add AXI/APB, SRAM, reset, clock, and power details.",
+        },
+    )
+
+    assert "--requirement" in command
+    assert command[command.index("--requirement") + 1] == "Design an AI chip."
+    assert "--resume-action" in command
+    assert command[command.index("--resume-action") + 1] == "REQUIREMENT_CLARIFICATION"
+
+
 def test_studio_backend_skips_credentials_for_skeleton() -> None:
     from studio.backend.runner import _core_requires_credentials
     from studio.backend.server import _core_runtime_capabilities

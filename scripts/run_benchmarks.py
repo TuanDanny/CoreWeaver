@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -21,6 +22,8 @@ async def _run_case(case: dict[str, object], output_root: Path) -> dict[str, obj
     expected_status = str(case.get("expected_status") or "PLAN_REVIEW")
     expected_topics = tuple(str(item) for item in case.get("expected_topics", []))
     output_dir = output_root / case_id
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
     session = RuntimeSession(
         RuntimeState(
             run_id=f"bench-{case_id}",
@@ -38,15 +41,23 @@ async def _run_case(case: dict[str, object], output_root: Path) -> dict[str, obj
     plan_text = plan_path.read_text(encoding="utf-8") if plan_path.exists() else ""
     combined = f"{event_payload}\n{plan_text}".lower()
     missing_topics = tuple(topic for topic in expected_topics if topic.lower() not in combined)
-    status_ok = result.action_required == expected_status or expected_status.lower() in combined
-    passed = status_ok and not missing_topics
+    status_ok = result.action_required == expected_status
     evidence_report = generate_agent1_evidence_report(output_dir, profile="mock_swarm", benchmark_case=case)
+    evidence_policy = _benchmark_evidence_policy(
+        expected_status=expected_status,
+        evidence_verdict=evidence_report.verdict,
+        readiness_score=evidence_report.readiness_score,
+        debug_completeness_score=evidence_report.debug_completeness_score,
+    )
+    passed = status_ok and not missing_topics and evidence_policy["passed"]
     return {
         "case_id": case_id,
         "passed": passed,
         "expected_status": expected_status,
         "status_ok": status_ok,
         "missing_topics": missing_topics,
+        "evidence_policy_passed": evidence_policy["passed"],
+        "evidence_policy_errors": evidence_policy["errors"],
         "artifact": str(plan_path).replace("\\", "/") if plan_path.exists() else "",
         "evidence_report": evidence_report.artifacts.report_path,
         "evidence_markdown_report": evidence_report.artifacts.markdown_report_path,
@@ -54,6 +65,36 @@ async def _run_case(case: dict[str, object], output_root: Path) -> dict[str, obj
         "debug_completeness_score": evidence_report.debug_completeness_score,
         "readiness_score": evidence_report.readiness_score,
     }
+
+
+def _benchmark_evidence_policy(
+    *,
+    expected_status: str,
+    evidence_verdict: str,
+    readiness_score: int,
+    debug_completeness_score: int,
+) -> dict[str, object]:
+    errors: list[str] = []
+    if debug_completeness_score != 100:
+        errors.append(f"debug_completeness_score:{debug_completeness_score}")
+
+    if expected_status == "PLAN_REVIEW":
+        if evidence_verdict != "ready":
+            errors.append(f"evidence_verdict:{evidence_verdict}")
+        if readiness_score != 100:
+            errors.append(f"readiness_score:{readiness_score}")
+    else:
+        if evidence_verdict != "not_ready":
+            errors.append(f"non_ready_case_evidence_verdict:{evidence_verdict}")
+        if readiness_score == 100:
+            errors.append("non_ready_case_readiness_score:100")
+
+    return {"passed": not errors, "errors": tuple(errors)}
+
+
+def _benchmark_gate_passed(results: list[dict[str, object]], pass_rate: float) -> bool:
+    evidence_gate_passed = all(bool(result["evidence_policy_passed"]) for result in results)
+    return pass_rate >= 0.9 and evidence_gate_passed
 
 
 async def _run_all(cases: list[dict[str, object]], output_root: Path) -> list[dict[str, object]]:
@@ -112,16 +153,19 @@ def main() -> int:
     if cases:
         results = asyncio.run(_run_all(cases, output_root))
         pass_rate = sum(1 for result in results if bool(result["passed"])) / len(results)
-        passed = pass_rate >= 0.9
+        evidence_gate_passed = all(bool(result["evidence_policy_passed"]) for result in results)
+        passed = _benchmark_gate_passed(results, pass_rate)
         message = "benchmark cases executed"
     else:
         results = []
         passed = True
         pass_rate = 1.0
+        evidence_gate_passed = True
         message = "benchmark framework ready"
     report = {
         "passed": passed,
         "case_count": len(cases),
+        "evidence_gate_passed": evidence_gate_passed,
         "message": message,
         "pass_rate": pass_rate,
         "cases": [case["case_id"] for case in cases],

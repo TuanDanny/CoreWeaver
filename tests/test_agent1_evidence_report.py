@@ -55,6 +55,14 @@ def test_agent1_evidence_report_ready_run_proves_debug_and_readiness(tmp_path: P
     assert report.artifacts.signoff_path in markdown
     assert report.artifacts.handoff_path in markdown
     assert "This run is ready because" in markdown
+    assert "## Trace Validation" in markdown
+    assert "Passed: `true`" in markdown
+    assert "## Replay Resume" in markdown
+    assert report.replay_resume.passed is True
+    assert report.replay_resume.latest_stage == "handoff_ready"
+    assert report.replay_resume.latest_checkpoint_ref == "checkpoints/latest.json"
+    assert report.replay_resume.action_required == "PLAN_REVIEW"
+    assert report.replay_resume.reconstructable is True
 
 
 def test_agent1_evidence_report_missing_trace_fails(tmp_path: Path) -> None:
@@ -129,6 +137,80 @@ def test_agent1_evidence_report_missing_trace_required_field_fails(tmp_path: Pat
     report = generate_agent1_evidence_report(run_dir)
     assert report.verdict == "not_ready"
     assert "trace_missing_required_field:span_id" in report.blockers
+
+
+def test_agent1_evidence_report_trace_replay_count_mismatch_fails(tmp_path: Path) -> None:
+    run_dir = _run_agent1(tmp_path)
+    replay_path = run_dir / "replay" / "replay_bundle.json"
+    replay = json.loads(replay_path.read_text(encoding="utf-8"))
+    replay["events"] = replay["events"][:-1]
+    replay_path.write_text(json.dumps(replay), encoding="utf-8")
+
+    report = generate_agent1_evidence_report(run_dir)
+
+    assert report.verdict == "not_ready"
+    assert report.trace_validation.passed is False
+    assert "trace_replay_event_count_mismatch" in report.trace_validation.errors
+    assert "trace_validation:trace_replay_event_count_mismatch" in report.blockers
+
+
+def test_agent1_evidence_report_duplicate_span_fails(tmp_path: Path) -> None:
+    run_dir = _run_agent1(tmp_path)
+    trace_path = run_dir / "trace" / "events.jsonl"
+    lines = trace_path.read_text(encoding="utf-8").splitlines()
+    first = json.loads(lines[0])
+    second = json.loads(lines[1])
+    second["span_id"] = first["span_id"]
+    lines[1] = json.dumps(second)
+    trace_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    report = generate_agent1_evidence_report(run_dir)
+
+    assert report.verdict == "not_ready"
+    assert any(error.startswith("duplicate_span_id:") for error in report.trace_validation.errors)
+    assert any(blocker.startswith("trace_validation:duplicate_span_id:") for blocker in report.blockers)
+
+
+def test_agent1_evidence_report_handoff_ready_without_g12_trace_fails(tmp_path: Path) -> None:
+    run_dir = _run_agent1(tmp_path)
+    trace_path = run_dir / "trace" / "events.jsonl"
+    lines = []
+    for line in trace_path.read_text(encoding="utf-8").splitlines():
+        event = json.loads(line)
+        payload = event.get("payload")
+        if (
+            event.get("event_type") == "agent1_signoff_gate_done"
+            and isinstance(payload, dict)
+            and payload.get("gate_id") == "G12"
+        ):
+            payload["status"] = "fail"
+        lines.append(json.dumps(event))
+    trace_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    replay_path = run_dir / "replay" / "replay_bundle.json"
+    replay = json.loads(replay_path.read_text(encoding="utf-8"))
+    replay["events"] = [json.loads(line) for line in lines]
+    replay_path.write_text(json.dumps(replay), encoding="utf-8")
+
+    report = generate_agent1_evidence_report(run_dir)
+
+    assert report.verdict == "not_ready"
+    assert "handoff_ready_without_g12_pass" in report.trace_validation.errors
+    assert "trace_validation:handoff_ready_without_g12_pass" in report.blockers
+
+
+def test_agent1_evidence_report_resume_mismatch_blocks_ready(tmp_path: Path) -> None:
+    run_dir = _run_agent1(tmp_path)
+    replay_path = run_dir / "replay" / "replay_bundle.json"
+    replay = json.loads(replay_path.read_text(encoding="utf-8"))
+    replay["resume"]["latest_stage"] = "stale_stage"
+    replay_path.write_text(json.dumps(replay), encoding="utf-8")
+
+    report = generate_agent1_evidence_report(run_dir)
+
+    assert report.verdict == "not_ready"
+    assert report.replay_resume.passed is False
+    assert "replay_resume_mismatch:latest_stage" in report.replay_resume.errors
+    assert "replay_resume:replay_resume_mismatch:latest_stage" in report.blockers
 
 
 def test_agent1_evidence_report_missing_artifact_ref_fails(tmp_path: Path) -> None:
