@@ -680,7 +680,11 @@ class RunnerManager:
         if command_name == "start":
             args.extend(["--requirement", str(payload.get("requirement") or self.state.requirement)])
         else:
-            args.extend(["--notes", str(payload.get("notes") or "ok"), "--resume-action", str(payload.get("resume_action") or self.state.pause.get("action_required", "") if self.state.pause else "")])
+            resume_action = str(payload.get("resume_action") or "")
+            if not resume_action and self.state.pause:
+                resume_action = str(self.state.pause.get("action_required") or "")
+            args.extend(["--requirement", str(payload.get("requirement") or self.state.requirement)])
+            args.extend(["--notes", str(payload.get("notes") or "ok"), "--resume-action", resume_action])
             if payload.get("change"):
                 args.extend(["--change", str(payload["change"])])
         return args

@@ -137,6 +137,10 @@ def _assert_replay_bundle(output_dir: Path, *, run_id: str) -> dict[str, object]
     assert "blackboard_snapshot" in replay
     assert "signoff" in replay
     assert "handoff" in replay
+    assert "resume" in replay
+    assert replay["resume"]["run_id"] == run_id
+    assert replay["resume"]["latest_checkpoint_ref"] == "checkpoints/latest.json"
+    assert replay["resume"]["reconstructable"] is True
     return replay
 
 
@@ -310,6 +314,112 @@ def test_early_pause_paths_write_replay_bundle(tmp_path: Path, requirement: str,
     assert replay["blackboard_snapshot"] is None
     assert replay["signoff"] is None
     assert replay["handoff"] is None
+    assert replay["resume"]["action_required"] == expected
+    if expected == "NON_DESIGN_CONVERSATION":
+        assert replay["resume"]["latest_stage"] == "pause_non_design"
+    else:
+        assert replay["resume"]["latest_stage"] == "clarification"
+
+
+def test_resume_plan_review_approval_writes_resume_result(tmp_path: Path) -> None:
+    session = RuntimeSession(
+        RuntimeState(
+            run_id="resume-plan-review",
+            profile="mock_swarm",
+            requirement="Design an APB timer peripheral with 32-bit CSRs, interrupt status W1C, 100MHz clock, synchronous reset.",
+            project_name="resume-plan",
+            output_dir=str(tmp_path),
+        )
+    )
+    assert asyncio.run(session.start()).action_required == "PLAN_REVIEW"
+
+    resume = RuntimeSession(
+        RuntimeState(
+            run_id="resume-plan-review",
+            profile="mock_swarm",
+            requirement="Design an APB timer peripheral with 32-bit CSRs, interrupt status W1C, 100MHz clock, synchronous reset.",
+            project_name="resume-plan",
+            output_dir=str(tmp_path),
+        )
+    )
+    result = asyncio.run(resume.resume(resume_action="APPROVE"))
+    resume_result = json.loads((tmp_path / "replay" / "resume_result.json").read_text(encoding="utf-8"))
+
+    assert result.action_required is None
+    assert result.stop_reason.value == "finished"
+    assert resume_result["status"] == "done"
+    assert any(event["event_type"] == "agent1_rollback_point_restored" for event in resume_result["events"])
+    assert any(event["event_type"] == "run_end" for event in resume_result["events"])
+
+
+def test_resume_clarification_reruns_with_user_detail(tmp_path: Path) -> None:
+    start = RuntimeSession(
+        RuntimeState(
+            run_id="resume-clarification",
+            profile="mock_swarm",
+            requirement="Design an AI chip.",
+            project_name="resume-clarification",
+            output_dir=str(tmp_path),
+        )
+    )
+    assert asyncio.run(start.start()).action_required == "REQUIREMENT_CLARIFICATION"
+
+    resume = RuntimeSession(
+        RuntimeState(
+            run_id="resume-clarification",
+            profile="mock_swarm",
+            requirement="Design an AI chip.",
+            project_name="resume-clarification",
+            planning_mode="deep_planning",
+            output_dir=str(tmp_path),
+        )
+    )
+    result = asyncio.run(
+        resume.resume(
+            resume_action="REQUIREMENT_CLARIFICATION",
+            notes="Use a 64-bit AXI4 image DMA, 32-bit APB CSRs, 64KB SRAM, AES-256 key lock, 500MHz clock, synchronous reset, and <2W budget.",
+        )
+    )
+    replay = _assert_replay_bundle(tmp_path, run_id="resume-clarification")
+    trace_text = (tmp_path / "trace" / "events.jsonl").read_text(encoding="utf-8")
+
+    assert result.action_required == "PLAN_REVIEW"
+    assert replay["resume"]["action_required"] == "PLAN_REVIEW"
+    assert "agent1_rollback_point_restored" in trace_text
+    assert (tmp_path / "reports" / "architecture_plan.md").exists()
+
+
+def test_resume_blocks_tampered_replay_state(tmp_path: Path) -> None:
+    start = RuntimeSession(
+        RuntimeState(
+            run_id="resume-tampered",
+            profile="mock_swarm",
+            requirement="Design an APB timer peripheral with 32-bit CSRs, interrupt status W1C, 100MHz clock, synchronous reset.",
+            project_name="resume-tampered",
+            output_dir=str(tmp_path),
+        )
+    )
+    assert asyncio.run(start.start()).action_required == "PLAN_REVIEW"
+    replay_path = tmp_path / "replay" / "replay_bundle.json"
+    replay = json.loads(replay_path.read_text(encoding="utf-8"))
+    replay["resume"]["latest_checkpoint_hash"] = "0" * 64
+    replay_path.write_text(json.dumps(replay), encoding="utf-8")
+
+    resume = RuntimeSession(
+        RuntimeState(
+            run_id="resume-tampered",
+            profile="mock_swarm",
+            requirement="Design an APB timer peripheral with 32-bit CSRs, interrupt status W1C, 100MHz clock, synchronous reset.",
+            project_name="resume-tampered",
+            output_dir=str(tmp_path),
+        )
+    )
+    result = asyncio.run(resume.resume(resume_action="APPROVE"))
+    resume_result = json.loads((tmp_path / "replay" / "resume_result.json").read_text(encoding="utf-8"))
+
+    assert result.action_required == "HITL_REQUIRED"
+    assert resume_result["status"] == "blocked"
+    assert any(event["event_type"] == "debug_issue" and event["payload"]["code"] == "replay_resume_invalid" for event in resume_result["events"])
 
 
 def test_conflict_and_signoff_block_paths_write_replay_bundle(tmp_path: Path) -> None:

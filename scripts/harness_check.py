@@ -14,6 +14,7 @@ for import_root in (SRC, ROOT):
 
 from coreweaver.harness.knowledge import KnowledgeInventory
 from coreweaver.harness.models import DebugIssue, IssueSeverity
+from coreweaver.harness.persistent_state import validate_feature_list
 from coreweaver.harness.rule_engine import HarnessContext, RuleEngine
 from coreweaver.harness.rules import load_rules
 from coreweaver.harness.secret_scan import scan_text_for_secrets
@@ -54,10 +55,12 @@ def main() -> int:
     args = parser.parse_args()
 
     knowledge_result = KnowledgeInventory(ROOT).check()
+    persistent_state = validate_feature_list(ROOT)
     private_ignored = _private_ignored()
     secret_scan = _secret_scan()
     checks = {
         "knowledge_inventory": _knowledge_inventory_report(knowledge_result),
+        "persistent_state_schema": _persistent_state_report(persistent_state),
         "private_ignored": private_ignored,
         "secret_scan": secret_scan["report"],
     }
@@ -85,6 +88,13 @@ def _knowledge_inventory_report(result) -> dict[str, object]:
         "passed": result.passed,
         "missing_paths": list(result.missing_paths),
         "stale_links": list(result.stale_links),
+    }
+
+
+def _persistent_state_report(result) -> dict[str, object]:
+    return {
+        "passed": result.passed,
+        "errors": list(result.errors),
     }
 
 

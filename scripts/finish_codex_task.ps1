@@ -30,8 +30,54 @@ $changedFiles = @()
 $changedFiles += git diff --name-only "$baseRef...HEAD"
 $changedFiles += git diff --name-only
 $changedFiles += git diff --name-only --cached
-$changedFiles += git ls-files --others --exclude-standard
+$untrackedFiles = @(git ls-files --others --exclude-standard | Where-Object { $_ } | ForEach-Object { Normalize-GitPath $_ })
+$changedFiles += $untrackedFiles
 $changedFiles = @($changedFiles | Where-Object { $_ } | ForEach-Object { Normalize-GitPath $_ } | Sort-Object -Unique)
+
+$blockedUntrackedPrefixes = @(
+  "src/coreweaver/agents/agents/",
+  "src/coreweaver/agents/contracts/",
+  "src/coreweaver/agents/debug/",
+  "src/coreweaver/agents/events/",
+  "src/coreweaver/agents/harness/",
+  "src/coreweaver/agents/hooks/",
+  "src/coreweaver/agents/messages/",
+  "src/coreweaver/agents/models/",
+  "src/coreweaver/agents/orchestration/",
+  "src/coreweaver/agents/runtime/",
+  "src/coreweaver/agents/safety/",
+  "src/coreweaver/agents/tools/"
+)
+$blockedUntrackedFiles = @(
+  "src/coreweaver/agents/api.py",
+  "src/coreweaver/agents/artifacts.py",
+  "src/coreweaver/agents/config.py",
+  "src/coreweaver/agents/errors.py",
+  "src/coreweaver/agents/framework_types.py",
+  "src/coreweaver/agents/mock_llm.py",
+  "src/coreweaver/agents/registry.py",
+  "src/coreweaver/agents/run_profiles.py",
+  "src/coreweaver/agents/studio_adapter.py",
+  "src/coreweaver/agents/studio_runner.py"
+)
+$blockedUntracked = @()
+foreach ($path in $untrackedFiles) {
+  if ($blockedUntrackedFiles -contains $path -or $path -like "kiemtra*.txt") {
+    $blockedUntracked += $path
+    continue
+  }
+  foreach ($prefix in $blockedUntrackedPrefixes) {
+    if ($path.StartsWith($prefix)) {
+      $blockedUntracked += $path
+      break
+    }
+  }
+}
+
+if ($blockedUntracked.Count -gt 0) {
+  Write-Error ("Refusing to finish while untracked mirror/scratch files could be staged by git add -A:`n" + (($blockedUntracked | Sort-Object -Unique) -join "`n"))
+  exit 1
+}
 
 $sensitivePrefixes = @(
   "src/",
@@ -94,6 +140,13 @@ if ($LASTEXITCODE -ne 0) {
   exit 1
 }
 
+$benchmarkResults = Join-Path $env:TEMP "coreweaver-finish-benchmark-results"
+python scripts\run_benchmarks.py --cases benchmarks\cases --results $benchmarkResults --json
+if ($LASTEXITCODE -ne 0) {
+  Write-Error "benchmarks failed. Fix benchmark evidence before creating PR."
+  exit 1
+}
+
 git add -A
 
 $hasChanges = git status --porcelain
@@ -115,6 +168,7 @@ $branch
 ## Checks run
 - python -m pytest -q tests
 - python scripts/harness_check.py --json
+- python scripts/run_benchmarks.py --cases benchmarks/cases --results %TEMP%/coreweaver-finish-benchmark-results --json
 
 ## Reviewer notes
 See session-handoff.md and progress.md for Codex handoff details.

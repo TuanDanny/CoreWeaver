@@ -49,11 +49,28 @@ def main(argv: list[str] | None = None) -> int:
         }
     )
     profile = os.environ.get("COREWEAVER_RUN_PROFILE", "mock_swarm").strip() or "mock_swarm"
-    asyncio.run(_run_coreweaver(request, profile))
+    asyncio.run(
+        _run_coreweaver(
+            request,
+            profile,
+            command=args.command,
+            resume_action=args.resume_action,
+            notes=args.notes,
+            change=args.change,
+        )
+    )
     return 0
 
 
-async def _run_coreweaver(request: Agent1StartRequest, profile: str) -> None:
+async def _run_coreweaver(
+    request: Agent1StartRequest,
+    profile: str,
+    *,
+    command: str = "start",
+    resume_action: str = "",
+    notes: str = "",
+    change: str = "",
+) -> None:
     session = RuntimeSession(
         RuntimeState(
             run_id=request.run_id,
@@ -66,7 +83,10 @@ async def _run_coreweaver(request: Agent1StartRequest, profile: str) -> None:
             attachment_refs=tuple(ref for ref in (request.attachment_manifest, request.attachment_context) if ref),
         )
     )
-    await session.start()
+    if command == "resume":
+        await session.resume(resume_action=resume_action, notes=notes, change=change)
+    else:
+        await session.start()
     for event in session.event_stream.history:
         studio_event = map_core_event_to_studio(event)
         if studio_event.get("type") == "pause":

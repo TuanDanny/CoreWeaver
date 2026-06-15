@@ -26,3 +26,6 @@ jobs:
 
       - name: Harness check
         run: python scripts\harness_check.py --json
+
+      - name: Benchmark evidence gate
+        run: python scripts\run_benchmarks.py --cases benchmarks\cases --results "$env:RUNNER_TEMP\coreweaver-benchmark-results" --json

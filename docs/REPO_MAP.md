@@ -4,7 +4,7 @@ This file maps the current public repo shape for future AI/Codex sessions.
 
 ## Major Directories
 - `.rules/`: machine-readable harness, security, trace, architecture, and handoff rules.
-- `.github/workflows/`: CI workflows for harness and regression checks.
+- `.github/workflows/`: CI workflows for harness, benchmark, and regression checks.
 - `benchmarks/`: public benchmark schemas, cases, runner outputs, and benchmark docs.
 - `docs/`: durable architecture, design, governance, product, generated, ADR, and context documentation.
 - `document/`: local learning/reference material.
@@ -27,12 +27,13 @@ This file maps the current public repo shape for future AI/Codex sessions.
 - `src/coreweaver/agents/agent1/runtime.py`: Agent1 true swarm flow.
 - `src/coreweaver/agents/agent1/signoff.py`: deterministic G00-G12 signoff.
 - `src/coreweaver/agents/agent1/evidence_report.py`: post-run Agent1 evidence report generator that reads trace, replay, signoff, handoff, and artifact references.
+- `src/coreweaver/debug/replay_resume.py`: typed replay resume-state reconstruction and validation.
 - `src/coreweaver/contracts/agent1_handoff.py`: consumer-side Agent1-to-Agent2 handoff validator.
 - `studio/backend/agent_service.py`: Studio job service and Agent2 draft gate.
 - `scripts/harness_check.py`: deterministic harness/rule/secret check.
 - `scripts/run_benchmarks.py`: public benchmark runner.
 - `scripts/generate_agent1_evidence_report.py`: CLI for generating an Agent1 evidence report from a run directory.
-- `scripts/start_codex_task.ps1` and `scripts/finish_codex_task.ps1`: branch, check, commit, push, and PR workflow.
+- `scripts/start_codex_task.ps1` and `scripts/finish_codex_task.ps1`: branch, check, benchmark-gated commit, push, and PR workflow; finish blocks known untracked mirror/scratch paths before staging.
 
 ## Runtime, Data, And Control Flow
 - Public callers use `CoreWeaverRuntime.start()` with a `CoreRequest`.
@@ -42,8 +43,8 @@ This file maps the current public repo shape for future AI/Codex sessions.
 - Design-ready paths run safety preflight, blackboard append, topology load, cluster assignment, canary check, manager/leaf expert work, challenge review, read-only verifier, architecture synthesis, proposal tracking, signoff, artifact writing, handoff readiness, trace, replay, and final HITL pause.
 - `mock_swarm` uses deterministic mock model behavior through `ModelRouter`.
 - `local_llm` uses an OpenAI-compatible client through `ModelRouter`; live endpoint credentials remain optional.
-- Agent1 artifacts are written under output directories such as `reports/`, `contracts/`, `trace/`, `replay/`, `blackboard/`, and `checkpoints/`.
-- Agent1 evidence reports are written under `artifacts/agent1_evidence_report.json` with artifact reference checks in `artifacts/agent1_artifact_index.json`.
+- Agent1 artifacts are written under output directories such as `reports/`, `contracts/`, `trace/`, `replay/`, `blackboard/`, and `checkpoints/`; replay bundles include a `resume` state for latest-checkpoint reconstruction, and `RuntimeSession.resume()` gates safe pause continuations on that state.
+- Agent1 evidence reports are written under `artifacts/agent1_evidence_report.json` and `artifacts/agent1_evidence_report.md` with artifact reference checks in `artifacts/agent1_artifact_index.json`.
 - Studio maps core events into UI/runtime tracking events and blocks Agent2 draft jobs unless handoff validation passes.
 
 ## Test Coverage Map
@@ -53,14 +54,14 @@ This file maps the current public repo shape for future AI/Codex sessions.
 - Agent1 true swarm happy and negative flows: `tests/test_agent1_true_swarm.py`.
 - Strict-done signoff, safety, handoff, local LLM fake client, and replay hardening: `tests/test_strict_done_hardening.py`.
 - Agent1 evidence report generation and negative artifact validation: `tests/test_agent1_evidence_report.py`.
-- Benchmark runner and cases: `tests/test_benchmark_skeleton.py`, `scripts/run_benchmarks.py`, `benchmarks/cases/`.
+- Benchmark runner and cases: `tests/test_benchmark_skeleton.py`, `scripts/run_benchmarks.py`, `benchmarks/cases/`; benchmark pass/fail includes exact runtime status checks, topic checks, per-case output cleanup, and hard Agent1 evidence-policy gating.
 - Package/source layout: `tests/test_packaging_rule.py`.
 - Harness knowledge and observability evals: `tests/test_harness_knowledge_observability_eval.py`.
 
 ## Known Gaps
 - Live `local_llm` quality is not certified by default gates.
 - Agent2 RTL execution is not implemented in the current CoreWeaver package.
-- Resume-from-checkpoint needs stronger end-to-end coverage.
+- Replay bundles now validate latest-checkpoint resume state, and safe pause resume paths are executable; arbitrary mid-run resume-from-checkpoint still needs stronger end-to-end coverage.
 - Replay depth is strongest for full signoff/conflict paths and thinner for early pause paths.
 - Agent1 verifier and handoff schema strictness can be improved further.
 - Benchmark scoring is deterministic and public-safe, but private datasheet-backed review remains future work.

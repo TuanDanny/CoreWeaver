@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
+import time
 import urllib.error
 import urllib.request
 
@@ -17,11 +19,16 @@ class OpenAICompatibleModelClient:
     def __init__(self, *, endpoint: str | None = None, model: str | None = None, api_key: str | None = None, timeout_s: float | None = None) -> None:
         self.endpoint = (endpoint or os.environ.get("COREWEAVER_MODEL_ENDPOINT") or "http://localhost:20128/v1").rstrip("/")
         self.model = model or os.environ.get("COREWEAVER_MODEL") or "cx/gpt-5.5"
-        self.api_key = api_key or os.environ.get("COREWEAVER_API_KEY") or os.environ.get("AGENT1_CODEX_API_KEY") or os.environ.get("SWARM_CODEX_API_KEY") or ""
+        self.api_key = api_key or os.environ.get("COREWEAVER_API_KEY") or os.environ.get("AGENT1_CODEX_API_KEY") or os.environ.get("SWARM_CODEX_API_KEY") or os.environ.get("GEMINI_API_KEY") or ""
         self.timeout_s = float(timeout_s or os.environ.get("COREWEAVER_MODEL_TIMEOUT_S") or 60)
+        concurrency = int(os.environ.get("COREWEAVER_MODEL_CONCURRENCY") or 1)
+        self.semaphore = asyncio.Semaphore(concurrency)
 
     async def complete(self, *, prompt: str, idempotency_key: str) -> ModelResponse:
-        return await asyncio.to_thread(self._complete_sync, prompt, idempotency_key)
+        async with self.semaphore:
+            # Enforce a 4.0s delay to stay safely under Gemini's 15 RPM rate limit
+            await asyncio.sleep(4.0)
+            return await asyncio.to_thread(self._complete_sync, prompt, idempotency_key)
 
     def _complete_sync(self, prompt: str, idempotency_key: str) -> ModelResponse:
         payload = {
@@ -41,11 +48,27 @@ class OpenAICompatibleModelClient:
             headers=headers,
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_s) as response:  # noqa: S310 - endpoint is local/user-configured.
-                data = json.loads(response.read().decode("utf-8"))
-        except urllib.error.URLError as exc:
-            raise ConnectionError(f"model endpoint unavailable: {exc.__class__.__name__}") from exc
+        max_retries = 6
+        base_delay = 1.0
+        data = {}
+        for attempt in range(max_retries + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout_s) as response:  # noqa: S310 - endpoint is local/user-configured.
+                    data = json.loads(response.read().decode("utf-8"))
+                break
+            except urllib.error.HTTPError as exc:
+                is_transient = exc.code in (429, 500, 502, 503, 504)
+                if is_transient and attempt < max_retries:
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+                    time.sleep(delay)
+                    continue
+                raise ConnectionError(f"model endpoint returned HTTP {exc.code}: {exc.reason}") from exc
+            except urllib.error.URLError as exc:
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+                    time.sleep(delay)
+                    continue
+                raise ConnectionError(f"model endpoint unavailable: {exc.__class__.__name__}") from exc
         text = str(data.get("choices", [{}])[0].get("message", {}).get("content") or "")
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         return ModelResponse(
