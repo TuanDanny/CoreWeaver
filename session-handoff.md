@@ -54,9 +54,9 @@ powershell -ExecutionPolicy Bypass -File scripts/dev_check.ps1
   Backend defaults to `http://127.0.0.1:8000`; frontend defaults to `http://127.0.0.1:5173`.
 
 ## Latest Task
-- Goal: redesign `README.md` into a polished GitHub showcase with professional badges/icons, architecture overview, status board, Studio quick start, and gate documentation.
+- Goal: replace the README top hero text block with a meaningful local image banner that matches CoreWeaver's silicon architecture harness theme.
 - Branch: `codex/repo-professional-profile`.
-- Files changed: `README.md`, `session-handoff.md`.
-- Tests run: `python -m pytest -q tests`; `python scripts/harness_check.py --json`; `python scripts/run_benchmarks.py --cases benchmarks/cases --results $env:TEMP/coreweaver-readme-redesign-benchmarks --json`.
-- Risks: README uses remote badge/icon image services (`img.shields.io`, `skillicons.dev`, `capsule-render.vercel.app`); if those services are unavailable, text content still renders normally.
-- Reviewer notes: README remains public-safe and does not change harness/runtime behavior.
+- Files changed: `README.md`, `docs/assets/coreweaver-hero.svg`, `session-handoff.md`.
+- Tests run: `python -m pytest -q tests`; `python scripts/harness_check.py --json`; `python scripts/run_benchmarks.py --cases benchmarks/cases --results $env:TEMP/coreweaver-readme-image-benchmarks --json`.
+- Risks: README now uses a local SVG banner; GitHub should render it normally, and the fallback alt text still describes the repo if image rendering is unavailable.
+- Reviewer notes: Only the top README hero area changed; runtime, harness behavior, and downstream README sections remain unchanged.
