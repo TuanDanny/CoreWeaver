@@ -54,9 +54,9 @@ powershell -ExecutionPolicy Bypass -File scripts/dev_check.ps1
   Backend defaults to `http://127.0.0.1:8000`; frontend defaults to `http://127.0.0.1:5173`.
 
 ## Latest Task
-- Goal: polish GitHub repository presentation and collaboration settings without changing harness behavior.
+- Goal: redesign `README.md` into a polished GitHub showcase with professional badges/icons, architecture overview, status board, Studio quick start, and gate documentation.
 - Branch: `codex/repo-professional-profile`.
-- Files changed: `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `.github/CODEOWNERS`, `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/config.yml`, `.github/ISSUE_TEMPLATE/bug_report.yml`, `.github/ISSUE_TEMPLATE/feature_request.yml`, `session-handoff.md`.
-- Tests run: `python -m pytest -q tests`; `python scripts/harness_check.py --json`; `python scripts/run_benchmarks.py --cases benchmarks/cases --results $env:TEMP/coreweaver-repo-polish-benchmarks --json`.
-- Risks: no public license is added because license selection is a repository-owner/legal decision; branch protection is intentionally admin-bypassable.
-- Reviewer notes: GitHub repo metadata was updated with a clearer description, professional topics, disabled Wiki/Projects, enabled delete-branch-on-merge, and lightweight `main` protection requiring the `harness` check plus conversation resolution.
+- Files changed: `README.md`, `session-handoff.md`.
+- Tests run: `python -m pytest -q tests`; `python scripts/harness_check.py --json`; `python scripts/run_benchmarks.py --cases benchmarks/cases --results $env:TEMP/coreweaver-readme-redesign-benchmarks --json`.
+- Risks: README uses remote badge/icon image services (`img.shields.io`, `skillicons.dev`, `capsule-render.vercel.app`); if those services are unavailable, text content still renders normally.
+- Reviewer notes: README remains public-safe and does not change harness/runtime behavior.
