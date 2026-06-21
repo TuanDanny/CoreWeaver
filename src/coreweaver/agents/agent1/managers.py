@@ -143,15 +143,19 @@ class MiddleManagerRunner:
                                 "group_id": assignment.group_id,
                                 "manager_id": assignment.manager_id,
                                 "expert_id": leaf_id,
-                                "status": result.status,
-                                "model_call_id": result.model_call_id,
+                                "attempt": attempt,
+                                "task_id": task.task_id,
                             },
                         )
                     )
                     return result
-                except Exception as exc:  # noqa: PERF203 - explicit retry trace matters here.
-                    last_error = exc
-                    event_type = CoreEventType.AGENT1_LEAF_EXPERT_RETRY if attempt < self.max_attempts else CoreEventType.AGENT1_LEAF_EXPERT_FAILED
+                except Exception as e:
+                    last_error = e
+                    event_type = (
+                        CoreEventType.AGENT1_LEAF_EXPERT_FAILED
+                        if attempt == self.max_attempts
+                        else CoreEventType.AGENT1_LEAF_EXPERT_RETRY
+                    )
                     await self.event_stream.emit(
                         CoreEvent(
                             event_type=event_type,
@@ -166,7 +170,7 @@ class MiddleManagerRunner:
                                 "manager_id": assignment.manager_id,
                                 "expert_id": leaf_id,
                                 "attempt": attempt,
-                                "error": exc.__class__.__name__,
+                                "error": e.__class__.__name__,
                             },
                         )
                     )
@@ -190,6 +194,6 @@ class MiddleManagerRunner:
                             )
                         )
                     if attempt < self.max_attempts:
-                        await asyncio.sleep(0.01 * attempt)
+                        await asyncio.sleep(1.0 * (2 ** attempt))
             assert last_error is not None
             raise last_error

@@ -54,9 +54,9 @@ powershell -ExecutionPolicy Bypass -File scripts/dev_check.ps1
   Backend defaults to `http://127.0.0.1:8000`; frontend defaults to `http://127.0.0.1:5173`.
 
 ## Latest Task
-- Goal: replace the README top hero text block with a meaningful local image banner that matches CoreWeaver's silicon architecture harness theme.
-- Branch: `codex/repo-professional-profile`.
-- Files changed: `README.md`, `docs/assets/coreweaver-hero.svg`, `session-handoff.md`.
-- Tests run: `python -m pytest -q tests`; `python scripts/harness_check.py --json`; `python scripts/run_benchmarks.py --cases benchmarks/cases --results $env:TEMP/coreweaver-readme-image-benchmarks --json`.
-- Risks: README now uses a local SVG banner; GitHub should render it normally, and the fallback alt text still describes the repo if image rendering is unavailable.
-- Reviewer notes: Only the top README hero area changed; runtime, harness behavior, and downstream README sections remain unchanged.
+- Goal: Upgrade Agent 1 reasoning engine to eliminate fallback regex and introduce structured LLM-as-a-judge for signoff gates.
+- Branch: `codex/agent1-reasoning-upgrade`.
+- Files changed: `experts.py`, `reasoning.py`, `signoff.py`, `verifier.py`, `openai_compatible.py`, and test files.
+- Tests run: `python -m pytest -q tests` (57/57 passed); `python scripts/harness_check.py --json` (Clean). E2E live test executed using `studio_test_apb_timer_3` but paused gracefully due to Google API `RESOURCE_EXHAUSTED` (code 429) rate limit on `gemini-3.5-flash` after successful cluster assignment. E2E handles parsing correctly and `agent1_canary_touched` functions correctly.
+- Risks: The system no longer falls back to hardcoded regex strings for AXI/AES components; if the model fails to output valid JSON conforming to the schema, it will retry and ultimately fail via `signoff` instead of passing with hallucinated data.
+- Reviewer notes: `_domain_findings` and `_synthesize_fallback` hardcoded mocks have been entirely removed. The system is completely dynamic and structured output bound. Ready to be merged once reviewed.

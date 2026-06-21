@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from coreweaver.framework_types import StrictCoreModel
 
@@ -17,5 +17,5 @@ class ModelResponse(StrictCoreModel):
 
 
 class ModelClient(Protocol):
-    async def complete(self, *, prompt: str, idempotency_key: str) -> ModelResponse:
+    async def complete(self, *, prompt: str, idempotency_key: str, response_format: type[BaseModel] | None = None) -> ModelResponse:
         ...

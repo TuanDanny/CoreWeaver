@@ -2044,31 +2044,34 @@ function SettingWorkspace({ settings, setSettings, onDebugIssue }: { settings: S
   if (!draft) return <section className="panel h-full p-5"><h2 className="text-xl font-bold">Studio Settings</h2><p className="mt-3 text-sm text-slate-400">Settings unavailable while backend is disconnected.</p></section>;
   const activeRef = draft.credentialRefs.find((ref) => ref.id === draft.activeKeyRef) ?? draft.credentialRefs[0];
   const activeHealth = draft.credentialHealth?.[draft.activeKeyRef] ?? "unchecked";
-  const runConnectionTest = async () => {
-    if (testing || cooldown) return;
-    setTesting(true);
-    setStatus("Testing auth via chat/completions...");
-    try {
-      const result = await testConnection({ endpoint: draft.endpoint, model: draft.model, apiKeyRef: draft.activeKeyRef });
-      setStatus(`${result.ok ? "PASS" : "FAIL"}: ${result.message}`);
-      const refreshed = await getSettings();
-      setSettings(refreshed);
-      setDraft(refreshed);
-    } catch (error) {
-      setStatus(`FAIL: ${String(error)}`);
-      onDebugIssue({ severity: "error", source: "frontend", code: "settings_test_connection_failed", message: `Test Connection failed: ${String(error)}`, details: { error: String(error) } });
-      getSettings().then((refreshed) => { setSettings(refreshed); setDraft(refreshed); }).catch((refreshError) => onDebugIssue({ severity: "warning", source: "frontend", code: "settings_refresh_after_test_failed", message: `Settings refresh failed after Test Connection: ${String(refreshError)}`, details: { error: String(refreshError) } }));
-    } finally {
-      setTesting(false);
-      setCooldown(true);
-      window.setTimeout(() => setCooldown(false), 3000);
-    }
-  };
+    const runConnectionTest = async () => {
+      if (testing || cooldown) return;
+      setTesting(true);
+      setStatus("Testing auth via chat/completions...");
+      try {
+        const result = await testConnection({ endpoint: draft.endpoint, model: draft.model, apiKeyRef: draft.activeKeyRef });
+        setStatus(`${result.ok ? "PASS" : "FAIL"}: ${result.message}`);
+        const refreshed = await getSettings();
+        setSettings(refreshed);
+        setDraft((prev) => prev ? { ...refreshed, endpoint: prev.endpoint, model: prev.model, checkpoint_db: prev.checkpoint_db, output_root: prev.output_root, activeKeyRef: prev.activeKeyRef } : refreshed);
+      } catch (error) {
+        setStatus(`FAIL: ${String(error)}`);
+        onDebugIssue({ severity: "error", source: "frontend", code: "settings_test_connection_failed", message: `Test Connection failed: ${String(error)}`, details: { error: String(error) } });
+        getSettings().then((refreshed) => { 
+          setSettings(refreshed); 
+          setDraft((prev) => prev ? { ...refreshed, endpoint: prev.endpoint, model: prev.model, checkpoint_db: prev.checkpoint_db, output_root: prev.output_root, activeKeyRef: prev.activeKeyRef } : refreshed); 
+        }).catch((refreshError) => onDebugIssue({ severity: "warning", source: "frontend", code: "settings_refresh_after_test_failed", message: `Settings refresh failed after Test Connection: ${String(refreshError)}`, details: { error: String(refreshError) } }));
+      } finally {
+        setTesting(false);
+        setCooldown(true);
+        window.setTimeout(() => setCooldown(false), 3000);
+      }
+    };
   return <section className="setting-workspace panel grid h-full min-h-0 grid-rows-[auto_1fr_auto] gap-4 p-5">
     <div><div className="field-kicker">Workspace</div><h2 className="text-xl font-bold">Studio Settings</h2><p className="text-sm text-slate-400">Runtime endpoint, model, checkpoints, outputs, and credential reference.</p></div>
     <div className="grid min-h-0 gap-3 overflow-auto lg:grid-cols-2">
       <label className="setting-card"><span className="field-kicker">Endpoint</span><input className="input font-mono" value={draft.endpoint} onChange={(e) => setDraft({ ...draft, endpoint: e.target.value })} /></label>
-      <label className="setting-card"><span className="field-kicker">Model</span><input className="input font-mono" value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })} /></label>
+      <label className="setting-card"><span className="field-kicker">Model</span><select className="input font-mono" value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })}><option value="gemini-1.5-flash">gemini-1.5-flash</option><option value="gemini-1.5-pro">gemini-1.5-pro</option><option value="gemini-2.0-flash">gemini-2.0-flash</option><option value="gemini-2.0-pro-exp">gemini-2.0-pro-exp</option><option value="gemini-2.5-flash">gemini-2.5-flash</option><option value="gemini-3.5-flash">gemini-3.5-flash</option><option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview</option></select></label>
       <label className="setting-card"><span className="field-kicker">Credential Reference</span><select className="input" value={draft.activeKeyRef} onChange={(e) => setDraft({ ...draft, activeKeyRef: e.target.value })}>{draft.credentialRefs.map((ref) => <option key={ref.id} value={ref.id}>{ref.label}</option>)}</select></label>
       <div className="setting-card text-sm text-slate-300">Server-side secret: <span className={activeRef?.hasSecret ? "text-success" : "text-danger"}>{activeRef?.hasSecret ? "configured" : "missing"}</span>{activeRef && <span> ({activeRef.source})</span>}<br />Auth health: <span className={activeHealth === "valid" ? "text-success" : activeHealth === "invalid" || activeHealth === "missing" ? "text-danger" : "text-amber"}>{activeHealth}</span><br />Browser never sees raw secrets.</div>
       <label className="setting-card"><span className="field-kicker">Checkpoint DB</span><input className="input font-mono" value={draft.checkpoint_db} onChange={(e) => setDraft({ ...draft, checkpoint_db: e.target.value })} /></label>

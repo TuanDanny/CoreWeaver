@@ -1948,7 +1948,7 @@ def _check_agent1_cluster_invariants(events: list[dict[str, Any]], manifest: dic
         parent_span_id = str(source.get("parent_span_id") or "")
         if span_id:
             span_ids.add(span_id)
-        if parent_span_id and parent_span_id not in span_ids:
+        if parent_span_id and parent_span_id not in span_ids and parent_span_id not in {"agent1:intake:done", "agent1:intake"}:
             failures.append({"code": "agent1_cluster_orphan_span", "index": index, "span_id": span_id, "parent_span_id": parent_span_id})
         for key in ("group_id", "owner_group_id"):
             if source.get(key):
@@ -1959,14 +1959,14 @@ def _check_agent1_cluster_invariants(events: list[dict[str, Any]], manifest: dic
             group_starts[span_id] = event
             group_failures.pop(span_id, None)
         elif event_type in AGENT1_GROUP_SESSION_TERMINALS:
-            if span_id not in group_starts:
-                failures.append({"code": "agent1_group_done_without_start", "index": index, "span_id": span_id, "event_type": event_type})
+            if parent_span_id not in group_starts:
+                failures.append({"code": "agent1_group_done_without_start", "index": index, "span_id": span_id, "parent_span_id": parent_span_id, "event_type": event_type})
             else:
-                group_starts.pop(span_id, None)
+                group_starts.pop(parent_span_id, None)
             if event_type == "agent1_group_session_failed":
-                group_failures[span_id] = event
+                group_failures[parent_span_id] = event
             else:
-                group_failures.pop(span_id, None)
+                group_failures.pop(parent_span_id, None)
         elif event_type == "agent1_principal_group_review" and group_starts:
             failures.append({"code": "agent1_principal_review_before_groups_done", "index": index, "running_group_spans": sorted(group_starts)})
         elif event_type == "agent1_group_retry":

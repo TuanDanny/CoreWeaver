@@ -37,6 +37,7 @@ def test_agent1_evidence_report_ready_run_proves_debug_and_readiness(tmp_path: P
         run_dir,
         benchmark_case={"case_id": "case_secure_npu", "mutation_tags": ["secure_key_policy", "ppa_risk"]},
     )
+    print(report.model_dump_json(indent=2))
     assert report.verdict == "ready"
     assert report.terminal_status == "PLAN_REVIEW"
     assert report.debug_completeness_score == 100
