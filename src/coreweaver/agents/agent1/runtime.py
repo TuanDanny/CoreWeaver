@@ -168,93 +168,107 @@ class Agent1SwarmRuntime:
         await self._emit(CoreEventType.AGENT1_PLAN_DAG_CREATED, run_id, revision_id, "agent1:plan_dag:created", "agent1:principal_review:1", {"nodes": dag_nodes})
         await self._emit(CoreEventType.AGENT1_PLAN_DAG_VALIDATED, run_id, revision_id, "agent1:plan_dag:validated", "agent1:plan_dag:created", {"nodes": dag_nodes, "status": "acyclic"})
         await self._emit(CoreEventType.AGENT1_PLAN_NODE_START, run_id, revision_id, "agent1:plan_node:architecture_reasoning:start", "agent1:plan_dag:validated", {"plan_node_id": "architecture_reasoning"})
-        await self.event_stream.emit(
-            CoreEvent(
-                event_type=CoreEventType.AGENT1_TOOL_CALL_START,
-                run_id=run_id,
-                revision_id=revision_id,
-                span_id="tool:architecture_reasoning:start",
-                parent_span_id="agent1:plan_node:architecture_reasoning:start",
-                tool_call_id="tool:architecture_reasoning",
-                idempotency_key=make_idempotency_key(run_id, revision_id, "architecture_reasoning"),
-                payload={"tool_call_id": "tool:architecture_reasoning", "stage": "architecture_reasoning"},
+        max_loops = 5 if planning_mode == "deep" else 2
+        feedback = None
+        for loop_idx in range(max_loops):
+            await self.event_stream.emit(
+                CoreEvent(
+                    event_type=CoreEventType.AGENT1_TOOL_CALL_START,
+                    run_id=run_id,
+                    revision_id=revision_id,
+                    span_id=f"tool:architecture_reasoning:start:{loop_idx}",
+                    parent_span_id="agent1:plan_node:architecture_reasoning:start",
+                    tool_call_id="tool:architecture_reasoning",
+                    idempotency_key=make_idempotency_key(run_id, revision_id, f"architecture_reasoning_{loop_idx}"),
+                    payload={"tool_call_id": "tool:architecture_reasoning", "stage": "architecture_reasoning", "loop": loop_idx},
+                )
             )
-        )
-        plan = ArchitectureReasoningEngine().synthesize(pack, tuple(summaries))
-        plan_id = stable_hash(plan.model_dump(mode="json"))
-        await self.event_stream.emit(
-            CoreEvent(
-                event_type=CoreEventType.AGENT1_TOOL_CALL_DONE,
-                run_id=run_id,
-                revision_id=revision_id,
-                span_id="tool:architecture_reasoning:done",
-                parent_span_id="tool:architecture_reasoning:start",
-                tool_call_id="tool:architecture_reasoning",
-                idempotency_key=make_idempotency_key(run_id, revision_id, "architecture_reasoning"),
-                payload={"tool_call_id": "tool:architecture_reasoning", "status": "done", "output_hash": plan_id},
+            plan = await ArchitectureReasoningEngine(self.model_router).synthesize(pack, tuple(summaries), idempotency_key=make_idempotency_key(run_id, revision_id, f"architecture_reasoning_{loop_idx}"), feedback=feedback)
+            plan_id = stable_hash(plan.model_dump(mode="json"))
+            await self.event_stream.emit(
+                CoreEvent(
+                    event_type=CoreEventType.AGENT1_TOOL_CALL_DONE,
+                    run_id=run_id,
+                    revision_id=revision_id,
+                    span_id=f"tool:architecture_reasoning:done:{loop_idx}",
+                    parent_span_id=f"tool:architecture_reasoning:start:{loop_idx}",
+                    tool_call_id="tool:architecture_reasoning",
+                    idempotency_key=make_idempotency_key(run_id, revision_id, f"architecture_reasoning_{loop_idx}"),
+                    payload={"tool_call_id": "tool:architecture_reasoning", "status": "done", "output_hash": plan_id},
+                )
             )
-        )
-        await self._emit(CoreEventType.AGENT1_PLAN_NODE_DONE, run_id, revision_id, "agent1:plan_node:architecture_reasoning:done", "agent1:plan_node:architecture_reasoning:start", {"plan_node_id": "architecture_reasoning", "plan_id": plan_id})
-        await self._emit(CoreEventType.AGENT1_PROPOSAL_CREATED, run_id, revision_id, "agent1:proposal:plan", "agent1:plan_node:architecture_reasoning:done", {"proposal_id": plan_id, "artifact_kind": "architecture_plan"})
-        if "unapproved_commit_mutation" in pack.raw_text.lower():
-            await self._emit(CoreEventType.AGENT1_PROPOSAL_REJECTED, run_id, revision_id, "agent1:proposal:rejected", "agent1:proposal:plan", {"proposal_id": plan_id, "reason": "dangerous action requires approval before commit"})
-            await self._emit_pause(run_id, revision_id, "HITL_REQUIRED", "Proposal approval is required before commit.")
-            self._write_checkpoint(output_dir, "proposal_rejected", run_id, revision_id, {"proposal_id": plan_id})
-            self._write_runtime_debug_artifacts(output_dir, board)
-            return Agent1SwarmResult(status="paused", action_required="HITL_REQUIRED", architecture_plan=plan)
-        await self._emit(CoreEventType.AGENT1_ROLLBACK_POINT_CREATED, run_id, revision_id, "agent1:rollback:pre_signoff", "agent1:proposal:plan", {"rollback_id": "pre_signoff", "blackboard_revision": board.revision})
-        self._write_checkpoint(output_dir, "pre_signoff", run_id, revision_id, {"plan_id": plan_id, "blackboard_revision": board.revision})
-        await self.event_stream.emit(
-            CoreEvent(
-                event_type=CoreEventType.AGENT1_TOOL_CALL_START,
-                run_id=run_id,
-                revision_id=revision_id,
-                span_id="tool:signoff:start",
-                parent_span_id="agent1:rollback:pre_signoff",
-                tool_call_id="tool:signoff",
-                idempotency_key=make_idempotency_key(run_id, revision_id, "signoff"),
-                payload={"tool_call_id": "tool:signoff", "stage": "signoff"},
+            await self._emit(CoreEventType.AGENT1_PLAN_NODE_DONE, run_id, revision_id, f"agent1:plan_node:architecture_reasoning:done:{loop_idx}", "agent1:plan_node:architecture_reasoning:start", {"plan_node_id": "architecture_reasoning", "plan_id": plan_id})
+            await self._emit(CoreEventType.AGENT1_PROPOSAL_CREATED, run_id, revision_id, f"agent1:proposal:plan:{loop_idx}", f"agent1:plan_node:architecture_reasoning:done:{loop_idx}", {"proposal_id": plan_id, "artifact_kind": "architecture_plan"})
+            if "unapproved_commit_mutation" in pack.raw_text.lower():
+                await self._emit(CoreEventType.AGENT1_PROPOSAL_REJECTED, run_id, revision_id, f"agent1:proposal:rejected:{loop_idx}", f"agent1:proposal:plan:{loop_idx}", {"proposal_id": plan_id, "reason": "dangerous action requires approval before commit"})
+                await self._emit_pause(run_id, revision_id, "HITL_REQUIRED", "Proposal approval is required before commit.")
+                self._write_checkpoint(output_dir, "proposal_rejected", run_id, revision_id, {"proposal_id": plan_id})
+                self._write_runtime_debug_artifacts(output_dir, board)
+                return Agent1SwarmResult(status="paused", action_required="HITL_REQUIRED", architecture_plan=plan)
+            await self._emit(CoreEventType.AGENT1_ROLLBACK_POINT_CREATED, run_id, revision_id, f"agent1:rollback:pre_signoff:{loop_idx}", f"agent1:proposal:plan:{loop_idx}", {"rollback_id": "pre_signoff", "blackboard_revision": board.revision})
+            self._write_checkpoint(output_dir, "pre_signoff", run_id, revision_id, {"plan_id": plan_id, "blackboard_revision": board.revision})
+            await self.event_stream.emit(
+                CoreEvent(
+                    event_type=CoreEventType.AGENT1_TOOL_CALL_START,
+                    run_id=run_id,
+                    revision_id=revision_id,
+                    span_id=f"tool:signoff:start:{loop_idx}",
+                    parent_span_id=f"agent1:rollback:pre_signoff:{loop_idx}",
+                    tool_call_id="tool:signoff",
+                    idempotency_key=make_idempotency_key(run_id, revision_id, f"signoff_{loop_idx}"),
+                    payload={"tool_call_id": "tool:signoff", "stage": "signoff", "loop": loop_idx},
+                )
             )
-        )
-        certificate = IndustrialSignoffEngine().evaluate(plan, verifier_findings)
-        await self.event_stream.emit(
-            CoreEvent(
-                event_type=CoreEventType.AGENT1_TOOL_CALL_DONE,
-                run_id=run_id,
-                revision_id=revision_id,
-                span_id="tool:signoff:done",
-                parent_span_id="tool:signoff:start",
-                tool_call_id="tool:signoff",
-                idempotency_key=make_idempotency_key(run_id, revision_id, "signoff"),
-                payload={"tool_call_id": "tool:signoff", "status": "done", "certificate_id": certificate.certificate_id},
+            certificate = await IndustrialSignoffEngine(self.model_router).evaluate(plan, verifier_findings, idempotency_key=make_idempotency_key(run_id, revision_id, f"signoff_eval_{loop_idx}"))
+            await self.event_stream.emit(
+                CoreEvent(
+                    event_type=CoreEventType.AGENT1_TOOL_CALL_DONE,
+                    run_id=run_id,
+                    revision_id=revision_id,
+                    span_id=f"tool:signoff:done:{loop_idx}",
+                    parent_span_id=f"tool:signoff:start:{loop_idx}",
+                    tool_call_id="tool:signoff",
+                    idempotency_key=make_idempotency_key(run_id, revision_id, f"signoff_{loop_idx}"),
+                    payload={"tool_call_id": "tool:signoff", "status": "done", "certificate_id": certificate.certificate_id},
+                )
             )
-        )
-        plan_ref, certificate_ref, handoff_ref = self._write_artifacts(output_dir, plan, certificate)
-        handoff = Agent2HandoffGate().build(plan=plan, certificate=certificate, plan_ref=plan_ref, certificate_ref=certificate_ref)
-        self._write_json(Path(handoff_ref), handoff.model_dump(mode="json"))
-        await self._emit_artifact(run_id, revision_id, plan_ref, "architecture_plan")
-        await self._emit_artifact(run_id, revision_id, certificate_ref, "signoff_certificate")
-        await self._emit_artifact(run_id, revision_id, handoff_ref, "agent1_to_agent2_handoff")
+            plan_ref, certificate_ref, handoff_ref = self._write_artifacts(output_dir, plan, certificate)
+            handoff = Agent2HandoffGate().build(plan=plan, certificate=certificate, plan_ref=plan_ref, certificate_ref=certificate_ref)
+            self._write_json(Path(handoff_ref), handoff.model_dump(mode="json"))
+            await self._emit_artifact(run_id, revision_id, plan_ref, "architecture_plan")
+            await self._emit_artifact(run_id, revision_id, certificate_ref, "signoff_certificate")
+            await self._emit_artifact(run_id, revision_id, handoff_ref, "agent1_to_agent2_handoff")
 
-        for gate_id, status in certificate.gate_results.items():
-            await self._emit(
-                CoreEventType.AGENT1_SIGNOFF_GATE_START,
-                run_id,
-                revision_id,
-                f"agent1:signoff:{gate_id}:start",
-                "tool:signoff:done",
-                {"gate_id": gate_id, "status": "start"},
-            )
-            await self._emit(
-                CoreEventType.AGENT1_SIGNOFF_GATE_DONE if status == "pass" else CoreEventType.AGENT1_SIGNOFF_GATE_FAILED,
-                run_id,
-                revision_id,
-                f"agent1:signoff:{gate_id}:done",
-                f"agent1:signoff:{gate_id}:start",
-                {"gate_id": gate_id, "status": status},
-        )
+            for gate_id, status in certificate.gate_results.items():
+                await self._emit(
+                    CoreEventType.AGENT1_SIGNOFF_GATE_START,
+                    run_id,
+                    revision_id,
+                    f"agent1:signoff:{gate_id}:start:{loop_idx}",
+                    f"tool:signoff:done:{loop_idx}",
+                    {"gate_id": gate_id, "status": "start"},
+                )
+                await self._emit(
+                    CoreEventType.AGENT1_SIGNOFF_GATE_DONE if status == "pass" else CoreEventType.AGENT1_SIGNOFF_GATE_FAILED,
+                    run_id,
+                    revision_id,
+                    f"agent1:signoff:{gate_id}:done:{loop_idx}",
+                    f"agent1:signoff:{gate_id}:start:{loop_idx}",
+                    {"gate_id": gate_id, "status": status},
+                )
+            
+            if handoff.ready:
+                break
+            else:
+                feedback = "The previous architecture plan failed signoff/handoff. Please fix the following blockers:\n"
+                for blocker in handoff.blockers:
+                    feedback += f"- {blocker}\n"
+                for gate_id, status in certificate.gate_results.items():
+                    if status == "fail":
+                        feedback += f"- Gate {gate_id} failed.\n"
+
         if handoff.ready:
-            await self._emit(CoreEventType.AGENT1_PROPOSAL_APPROVED, run_id, revision_id, "agent1:proposal:approved", "agent1:signoff:G12:done", {"proposal_id": plan_id, "certificate_id": certificate.certificate_id})
+            await self._emit(CoreEventType.AGENT1_PROPOSAL_APPROVED, run_id, revision_id, "agent1:proposal:approved", f"agent1:signoff:G12:done:{loop_idx}", {"proposal_id": plan_id, "certificate_id": certificate.certificate_id})
             await self._emit(CoreEventType.AGENT1_HANDOFF_READY, run_id, revision_id, "agent1:handoff:ready", "agent1:signoff", {"handoff_ref": handoff_ref})
             await self._emit(CoreEventType.AGENT1_PROPOSAL_COMMITTED, run_id, revision_id, "agent1:proposal:committed", "agent1:handoff:ready", {"proposal_id": plan_id, "handoff_ref": handoff_ref})
             self._write_checkpoint(output_dir, "handoff_ready", run_id, revision_id, {"handoff_ref": handoff_ref, "certificate_id": certificate.certificate_id})
@@ -262,7 +276,8 @@ class Agent1SwarmRuntime:
             await self._emit_pause(run_id, revision_id, "PLAN_REVIEW", "Architecture plan ready for human review.", {"plan_path": plan_ref, "artifact_path": plan_ref})
             self._write_runtime_debug_artifacts(output_dir, board)
             return Agent1SwarmResult(status="paused", action_required="PLAN_REVIEW", architecture_plan=plan, signoff_certificate=certificate, handoff=handoff, artifact_paths=(plan_ref, certificate_ref, handoff_ref))
-        await self._emit(CoreEventType.AGENT1_PROPOSAL_REJECTED, run_id, revision_id, "agent1:proposal:rejected", "agent1:signoff:G12:done", {"proposal_id": plan_id, "blockers": handoff.blockers})
+        
+        await self._emit(CoreEventType.AGENT1_PROPOSAL_REJECTED, run_id, revision_id, "agent1:proposal:rejected", f"agent1:signoff:G12:done:{loop_idx}", {"proposal_id": plan_id, "blockers": handoff.blockers})
         await self._emit(CoreEventType.AGENT1_HANDOFF_BLOCKED, run_id, revision_id, "agent1:handoff:blocked", "agent1:signoff", {"blockers": handoff.blockers})
         self._write_checkpoint(output_dir, "handoff_blocked", run_id, revision_id, {"blockers": handoff.blockers, "certificate_id": certificate.certificate_id})
         self._write_runtime_debug_artifacts(output_dir, board)
@@ -339,7 +354,13 @@ class Agent1SwarmRuntime:
         await self._emit(CoreEventType.HITL_REQUIRED, run_id, revision_id, f"agent1:pause:{action_required.lower()}", "agent1", payload)
 
     async def _emit_artifact(self, run_id: str, revision_id: str, path: str, kind: str) -> None:
-        await self._emit(CoreEventType.ARTIFACT_WRITTEN, run_id, revision_id, f"artifact:{stable_hash(path)[:12]}", "agent1:artifacts", {"path": path, "kind": kind, "message": f"{kind} written"})
+        span_id = f"artifact:{stable_hash(path)[:12]}"
+        if not hasattr(self, "_emitted_artifacts"):
+            self._emitted_artifacts = set()
+        if span_id in self._emitted_artifacts:
+            return
+        self._emitted_artifacts.add(span_id)
+        await self._emit(CoreEventType.ARTIFACT_WRITTEN, run_id, revision_id, span_id, "agent1:artifacts", {"path": path, "kind": kind, "message": f"{kind} written"})
 
     async def _emit_debug_issue(self, run_id: str, revision_id: str, source: str, code: str, message: str, *, parent_span_id: str) -> None:
         await self._emit(

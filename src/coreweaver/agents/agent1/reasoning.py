@@ -2,143 +2,84 @@ from __future__ import annotations
 
 from .intake import extract_requirement_signals
 from .models import ArchitecturePlan, ManagerSummary, RegisterEntry, RequirementPack
+import json
+from coreweaver.models import ModelRouter
 
 
 class ArchitectureReasoningEngine:
-    def synthesize(self, pack: RequirementPack, summaries: tuple[ManagerSummary, ...]) -> ArchitecturePlan:
-        signals = extract_requirement_signals(pack.raw_text)
-        text = pack.raw_text.lower()
-        title = _title_for(pack)
-        interfaces = _interface_section(signals)
-        registers = _registers(text)
-        security = _security_section(text)
-        top_blocks = (
-            "Firmware/APB control plane",
-            "AXI4 DMA/image data plane" if "axi" in text else "Primary data ingress/egress interface",
-            "MAC/datapath core" if "mac" in text or "npu" in text else "Compute/control core",
-            "SRAM/buffer subsystem" if "sram" in text or "buffer" in text else "Local state/memory block",
-            "Security/encryption boundary" if "aes" in text or "secure" in text else "Safety and protection boundary",
+    def __init__(self, model_router: ModelRouter) -> None:
+        self.model_router = model_router
+
+    async def synthesize(self, pack: RequirementPack, summaries: tuple[ManagerSummary, ...], idempotency_key: str, feedback: str | None = None) -> ArchitecturePlan:
+        context_parts = []
+        for summary in summaries:
+            accepted = []
+            for res in summary.accepted_results:
+                accepted.extend(res.findings)
+            findings_text = "\n".join(f"- {f}" for f in accepted)
+            context_parts.append(f"### {summary.manager_id} Report\n{summary.summary}\nFindings:\n{findings_text}")
+        context_str = "\n\n".join(context_parts)
+
+        prompt = (
+            f"You are the Principal Architecture Engine for CoreWeaver.\n"
+            f"Synthesize the following User Requirement and Manager Reports into a cohesive ArchitecturePlan.\n"
+            f"You MUST use the provided context to fill out all fields. If details are missing, explicitly state open assumptions.\n"
+            f"CRITICAL: You MUST respond in pure JSON format matching the ArchitecturePlan schema. Do not output any markdown text outside the JSON.\n\n"
+            f"USER REQUIREMENT:\n{pack.raw_text}\n\n"
+            f"MANAGER REPORTS:\n{context_str}\n"
         )
-        memory_map = (
-            "0x0000-0x0FFF: APB CSR window",
-            "0x1000-0x1FFF: status/error/interrupt window",
-            "0x2000-0x2FFF: protected key/programming control window" if "key" in text or "aes" in text else "0x2000-0x2FFF: implementation-specific control window",
-            "SRAM buffer address window is locked in Agent2 handoff after bus integration sizing.",
-        )
+        if feedback:
+            prompt += f"\nFEEDBACK FROM PREVIOUS RUN (MUST FIX):\n{feedback}\n"
+
+
+        try:
+            response, record = await self.model_router.complete(
+                prompt=prompt,
+                idempotency_key=idempotency_key,
+                model_name="agent1-principal",
+                response_format=ArchitecturePlan,
+            )
+            try:
+                from .expert_parser import extract_json_block
+                clean_text = extract_json_block(response.text)
+                plan_data = json.loads(clean_text)
+            except Exception:
+                clean_text = response.text.strip()
+                if clean_text.startswith("```json"): clean_text = clean_text[7:]
+                if clean_text.startswith("```"): clean_text = clean_text[3:]
+                if clean_text.endswith("```"): clean_text = clean_text[:-3]
+                clean_text = clean_text.strip()
+                plan_data = json.loads(clean_text)
+
+            provenance = tuple(f"{summary.manager_id}:{summary.output_hash[:12]}" for summary in summaries)
+            plan_data["provenance_refs"] = provenance
+            plan_data["requirement_summary"] = pack.raw_text
+            if not plan_data.get("title"):
+                plan_data["title"] = f"{pack.project_name} Architecture Plan"
+            return ArchitecturePlan(**plan_data)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return self._synthesize_fallback(pack, summaries, str(e))
+
+    def _synthesize_fallback(self, pack: RequirementPack, summaries: tuple[ManagerSummary, ...], error_msg: str) -> ArchitecturePlan:
         provenance = tuple(f"{summary.manager_id}:{summary.output_hash[:12]}" for summary in summaries)
         return ArchitecturePlan(
-            title=title,
+            title="Failed Architecture Synthesis",
             requirement_summary=pack.raw_text,
-            assumptions=pack.assumptions or ("Implementation details not specified are held as explicit open assumptions.",),
+            assumptions=(f"Synthesis failed due to JSON parse error: {error_msg}",),
             open_questions=pack.missing_fields,
-            top_level_blocks=top_blocks,
-            interfaces=interfaces,
-            memory_map=memory_map,
-            registers=registers,
-            security_model=security,
-            datapath_control=_datapath_section(text),
-            reset_clock_cdc=_clock_reset_section(signals),
-            interrupt_error_policy=(
-                "APB-visible sticky error/status registers use W1C where firmware clears events.",
-                "DMA, AES, SRAM ECC/parity, and protocol errors must map to explicit interrupt/status bits.",
-            ),
-            formal_intent=(
-                "Prove APB register access policy, including write-only/no-readback fields.",
-                "Prove lock-after-boot monotonicity and no write after lock for protected controls.",
-                "Prove AXI/APB handshake stability and no invalid ready/valid response.",
-            ),
-            dv_intent=(
-                "cocotb APB CSR regressions for access type, reset, W1C, WO, and lock behavior.",
-                "AXI DMA stress with backpressure, burst edges, reset injection, and malformed transactions.",
-                "Security negative tests for readback, debug visibility, and post-lock key writes.",
-            ),
-            ppa_risks=_ppa_section(signals, text),
-            agent2_handoff_contract=(
-                "Agent2 receives locked interface widths, CSR access policy, reset/clock assumptions, and signoff findings.",
-                "Agent2 may not rename externally visible interfaces without handoff contract update.",
-            ),
+            top_level_blocks=("ERROR: Fallback triggered",),
+            interfaces=("ERROR: Fallback triggered",),
+            memory_map=("ERROR: Fallback triggered",),
+            registers=(),
+            security_model=("ERROR: Fallback triggered",),
+            datapath_control=("ERROR: Fallback triggered",),
+            reset_clock_cdc=("ERROR: Fallback triggered",),
+            interrupt_error_policy=("ERROR: Fallback triggered",),
+            formal_intent=("ERROR: Fallback triggered",),
+            dv_intent=("ERROR: Fallback triggered",),
+            ppa_risks=("ERROR: Fallback triggered",),
+            agent2_handoff_contract=("ERROR: Fallback triggered",),
             provenance_refs=provenance,
         )
-
-
-def _title_for(pack: RequirementPack) -> str:
-    text = pack.raw_text.lower()
-    if "npu" in text:
-        return "Secure Edge AI Vision NPU Architecture Plan"
-    if "cpu" in text:
-        return "CPU Architecture Plan"
-    if "uart" in text:
-        return "UART Peripheral Architecture Plan"
-    if "i2c" in text:
-        return "I2C Peripheral Architecture Plan"
-    return f"{pack.project_name} Architecture Plan"
-
-
-def _interface_section(signals: dict[str, object]) -> tuple[str, ...]:
-    interfaces = tuple(signals.get("interfaces") or ())
-    items: list[str] = []
-    if "AXI4" in interfaces or "AXI" in interfaces:
-        items.append("AXI4 data-plane interface for high-throughput DMA and image/weight movement.")
-    if "APB" in interfaces:
-        items.append("APB configuration interface for firmware-visible CSRs.")
-    if not items:
-        items.append("Interface contract is open; bus width and protocol must be clarified before Agent2.")
-    return tuple(items)
-
-
-def _registers(text: str) -> tuple[RegisterEntry, ...]:
-    registers = [
-        RegisterEntry(name="CTRL", offset="0x0000", access="RW", reset="0x0", description="Enable, soft reset request, operating mode."),
-        RegisterEntry(name="STATUS", offset="0x0004", access="RO", reset="0x0", description="Busy, idle, done, and fault summary."),
-        RegisterEntry(name="IRQ_STATUS", offset="0x0008", access="W1C", reset="0x0", description="Sticky interrupt causes, cleared by writing 1."),
-        RegisterEntry(name="IRQ_ENABLE", offset="0x000C", access="RW", reset="0x0", description="Interrupt enables."),
-    ]
-    if "key" in text or "aes" in text:
-        registers.extend(
-            [
-                RegisterEntry(name="AES_KEY_WDATA", offset="0x0100", access="WO", reset="X", description="AES-256 key programming window; no readback under any circumstance."),
-                RegisterEntry(name="AES_KEY_LOCK", offset="0x0120", access="WO", reset="0x0", description="Set-only lock-after-boot control; once set, key writes are ignored until reset policy permits re-provisioning."),
-                RegisterEntry(name="AES_KEY_STATUS", offset="0x0124", access="RO", reset="0x0", description="Reports locked/programmed state without exposing key material."),
-            ]
-        )
-    return tuple(registers)
-
-
-def _security_section(text: str) -> tuple[str, ...]:
-    if "key" in text or "aes" in text or "secure" in text:
-        return (
-            "AES-256 decrypt runs on the weight fetch path before MAC-array use.",
-            "Secret key programming is software-writable but hardware-protected as WO, lock-after-boot, no readback.",
-            "Debug, trace, scan-visible artifacts, and APB reads must never expose key material.",
-        )
-    return ("No explicit security mechanism requested; keep debug/trace secret-scan active.",)
-
-
-def _datapath_section(text: str) -> tuple[str, ...]:
-    if "npu" in text or "mac" in text:
-        return (
-            "DMA fills SRAM/image buffers while MAC array consumes tiled data.",
-            "Encrypted weights pass through AES decrypt before entering the MAC-array feed path.",
-            "Control path arbitrates DMA, SRAM banking, AES readiness, and MAC scheduling.",
-        )
-    return ("Datapath/control split remains lightweight until workload details are provided.",)
-
-
-def _clock_reset_section(signals: dict[str, object]) -> tuple[str, ...]:
-    clock = str(signals.get("clock") or "TBD")
-    return (
-        f"Target clock: {clock}.",
-        "Reset polarity, reset synchronizers, and cross-domain paths must be locked before RTL.",
-        "CDC/RDC review required for APB control to high-speed datapath crossings.",
-    )
-
-
-def _ppa_section(signals: dict[str, object], text: str) -> tuple[str, ...]:
-    risks = []
-    if str(signals.get("clock") or "") == "500MHz":
-        risks.append("500MHz timing is a high-risk target for AES + SRAM + MAC feed without deliberate pipelining.")
-    if "power_budget" in signals:
-        risks.append(f"Power budget {signals['power_budget']} needs workload, process, voltage, and activity assumptions before pass/fail.")
-    if not risks:
-        risks.append("PPA cannot be quantified until process node, voltage, activity, and floorplan assumptions are known.")
-    return tuple(risks)

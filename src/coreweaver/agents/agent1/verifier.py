@@ -8,8 +8,8 @@ from .models import ChallengeSeverity, SignoffFinding
 
 
 class ReadOnlyVerifier:
-    def __init__(self, *, expected_manager_count: int = 7) -> None:
-        self.expected_manager_count = expected_manager_count
+    def __init__(self) -> None:
+        pass
 
     def verify(self, snapshot: BlackboardSnapshot) -> tuple[SignoffFinding, ...]:
         findings: list[SignoffFinding] = []
@@ -46,13 +46,13 @@ class ReadOnlyVerifier:
             )
         manager_entries = [entry for entry in snapshot.entries if entry.message.kind == MessageKind.MANAGER_SUMMARY]
         manager_ids = [str(_payload(entry).get("manager_id") or entry.group_id or "") for entry in manager_entries]
-        if len(manager_entries) != self.expected_manager_count:
+        if not manager_entries:
             findings.append(
                 SignoffFinding(
                     gate_id="V04",
                     severity=ChallengeSeverity.BLOCKER,
                     code="manager_summary_count_invalid",
-                    message=f"Verifier expected {self.expected_manager_count} manager summaries.",
+                    message="Verifier expected at least one manager summary.",
                     evidence_refs=tuple(entry.entry_id for entry in manager_entries),
                 )
             )

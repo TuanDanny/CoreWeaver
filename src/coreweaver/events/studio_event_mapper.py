@@ -32,7 +32,14 @@ def map_core_event_to_studio(event: CoreEvent) -> dict[str, Any]:
         CoreEventType.INTAKE_FAILED,
         CoreEventType.CLASSIFICATION_DONE,
     }:
-        return {"type": event.event_type.value, "run_id": event.run_id, **data.get("payload", {})}
+        return {
+            "type": event.event_type.value,
+            "run_id": event.run_id,
+            "span_id": event.span_id,
+            "parent_span_id": event.parent_span_id,
+            "retry_count": event.retry_count,
+            **data.get("payload", {})
+        }
     return {
         "type": "agent_action",
         "agent": str(event.payload.get("agent") or "agent1"),

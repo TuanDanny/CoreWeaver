@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from pydantic import BaseModel
 
 from coreweaver.agents.agent1.runtime import Agent1SwarmRuntime
 from coreweaver.events import AsyncEventStream
@@ -16,13 +17,13 @@ SECURE_NPU = (
     "Target frequency: 500MHz. Power budget: < 2W."
 )
 
+from coreweaver.models.mock import MockModelClient
 
-class FailingExpertsClient:
-    async def complete(self, *, prompt: str, idempotency_key: str) -> ModelResponse:
+class FailingExpertsClient(MockModelClient):
+    async def complete(self, *, prompt: str, idempotency_key: str, response_format: type[BaseModel] | None = None) -> ModelResponse:
         if any(name in prompt for name in ("axi_apb_expert", "crypto_expert", "timing_expert")):
             raise TimeoutError("mock timeout")
-        text = f"ok:{stable_hash(prompt)[:8]}"
-        return ModelResponse(text=text, output_hash=stable_hash(text), prompt_tokens=len(prompt.split()), completion_tokens=1)
+        return await super().complete(prompt=prompt, idempotency_key=idempotency_key, response_format=response_format)
 
 
 def test_secure_npu_true_swarm_generates_plan_and_handoff(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from pydantic import BaseModel
 
 from coreweaver.framework_types import stable_hash
 from coreweaver.runtime.checkpoints import InMemoryCheckpointStore
@@ -15,11 +16,11 @@ class ModelRouter:
         self.client = client or MockModelClient()
         self.checkpoints = checkpoint_store or InMemoryCheckpointStore()
 
-    async def complete(self, *, prompt: str, idempotency_key: str, model_name: str = "mock") -> tuple[ModelResponse, ModelCallRecord]:
+    async def complete(self, *, prompt: str, idempotency_key: str, model_name: str = "mock", response_format: type[BaseModel] | None = None) -> tuple[ModelResponse, ModelCallRecord]:
         if self.checkpoints.has_completed(idempotency_key):
             return self.checkpoints.get_completed(idempotency_key)
         start = time.perf_counter()
-        response = await self.client.complete(prompt=prompt, idempotency_key=idempotency_key)
+        response = await self.client.complete(prompt=prompt, idempotency_key=idempotency_key, response_format=response_format)
         latency_ms = int((time.perf_counter() - start) * 1000)
         record = ModelCallRecord(
             model_call_id=f"model:{stable_hash(idempotency_key)[:16]}",

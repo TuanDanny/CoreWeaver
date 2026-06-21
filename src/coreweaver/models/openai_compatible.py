@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 
 from coreweaver.framework_types import stable_hash
+from pydantic import BaseModel
 
 from .client import ModelResponse
 
@@ -24,21 +25,28 @@ class OpenAICompatibleModelClient:
         concurrency = int(os.environ.get("COREWEAVER_MODEL_CONCURRENCY") or 1)
         self.semaphore = asyncio.Semaphore(concurrency)
 
-    async def complete(self, *, prompt: str, idempotency_key: str) -> ModelResponse:
+    async def complete(self, *, prompt: str, idempotency_key: str, response_format: type[BaseModel] | None = None) -> ModelResponse:
         async with self.semaphore:
             # Enforce a 4.0s delay to stay safely under Gemini's 15 RPM rate limit
             await asyncio.sleep(4.0)
-            return await asyncio.to_thread(self._complete_sync, prompt, idempotency_key)
+            return await asyncio.to_thread(self._complete_sync, prompt, idempotency_key, response_format)
 
-    def _complete_sync(self, prompt: str, idempotency_key: str) -> ModelResponse:
+    def _complete_sync(self, prompt: str, idempotency_key: str, response_format: type[BaseModel] | None = None) -> ModelResponse:
+        system_content = "You are a semiconductor architecture expert. Return concise, technical findings only."
+        if response_format:
+            schema_json = json.dumps(response_format.model_json_schema(), indent=2)
+            system_content += f"\n\nCRITICAL INSTRUCTION: You MUST return a pure JSON object. It must strictly validate against this JSON Schema:\n{schema_json}"
+            
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": "You are a semiconductor architecture expert. Return concise, technical findings only."},
+                {"role": "system", "content": system_content},
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.2,
         }
+        if response_format:
+            payload["response_format"] = {"type": "json_object"}
         headers = {"Content-Type": "application/json", "Idempotency-Key": idempotency_key}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
